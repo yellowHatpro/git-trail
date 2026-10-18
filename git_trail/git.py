@@ -5,6 +5,7 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 
@@ -67,9 +68,25 @@ class HistoryEntry:
     old_count: int
     new_start: int
     new_count: int
+    old_path: str = ""
+    new_path: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class CommitDetails:
+    commit: str
+    message: str
+    files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HistoryView:
+    snapshot: Snapshot | None
+    selection: LineRange | None
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -170,13 +187,7 @@ class Repository:
 
     def snapshot(self, path: str | Path) -> Snapshot:
         path = self.path(path)
-        raw = self._git("show", f"{self.commit}:{path}")
-        if b"\0" in raw:
-            raise TrailError(f"{path} is a binary file. Select a text file.")
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError as error:
-            raise TrailError(f"{path} is not UTF-8 text. Select a UTF-8 source file.") from error
+        text = self.revision_text(path, self.commit)
         if not source_lines(text):
             raise TrailError(f"{path} is empty at the selected commit.")
         changed = bool(
@@ -187,6 +198,70 @@ class Repository:
         )
         return Snapshot(path, self.commit, text, changed)
 
+    @lru_cache(maxsize=64)
+    def revision_text(self, path: str, commit: str) -> str:
+        path = self.path(path)
+        self.validate_commit(commit)
+        raw = self._git("show", f"{commit}:{path}")
+        if b"\0" in raw:
+            raise TrailError(f"{path} is a binary file. Select a text file.")
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as error:
+            raise TrailError(f"{path} is not UTF-8 text. Select a UTF-8 source file.") from error
+        return text
+
+    @staticmethod
+    def validate_commit(commit: str) -> None:
+        if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+            raise TrailError("Use a resolved commit SHA for historical source.")
+
+    @lru_cache(maxsize=32)
+    def at(self, commit: str) -> Repository:
+        self.validate_commit(commit)
+        return Repository(self.root, commit)
+
+    @lru_cache(maxsize=64)
+    def details(self, commit: str) -> CommitDetails:
+        self.validate_commit(commit)
+        message = self._git("show", "--no-patch", "--no-show-signature", "--format=%B", commit)
+        paths = self._git(
+            "diff-tree", "--root", "-m", "--no-commit-id", "--name-only", "-r", "-z",
+            "--no-ext-diff", "--no-textconv", commit,
+        )
+        files = tuple(dict.fromkeys(
+            path.decode("utf-8", errors="replace") for path in paths.split(b"\0") if path
+        ))
+        return CommitDetails(commit, message.decode("utf-8", errors="replace").strip(), files)
+
+    @lru_cache(maxsize=64)
+    def historical_source(self, entry: HistoryEntry, before: bool = False) -> HistoryView:
+        if before and not entry.parents:
+            return HistoryView(None, None, "This is the first commit. No earlier source exists.")
+        commit = entry.parents[0] if before else entry.commit
+        path = entry.old_path if before else entry.new_path
+        if not path:
+            return HistoryView(None, None, "The file does not exist on this side of the change.")
+        text = self.revision_text(path, commit)
+        snapshot = Snapshot(path, commit, text, False)
+        side = 0 if before else 2
+        coordinates = re.findall(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", entry.patch, re.M)
+        ranges = [
+            (int(hunk[side]), int(hunk[side + 1] or "1")) for hunk in coordinates
+            if int(hunk[side + 1] or "1") > 0
+        ]
+        if not ranges:
+            return HistoryView(snapshot, None, "The selected lines do not exist on this side of the change.")
+        selection = LineRange(
+            min(start for start, _ in ranges),
+            max(start + count - 1 for start, count in ranges),
+            "historical range",
+        )
+        selection.validate(len(snapshot.lines))
+        note = "Before view uses the first parent of this merge." if before and len(entry.parents) > 1 else ""
+        return HistoryView(snapshot, selection, note)
+
+    @lru_cache(maxsize=32)
     def history(self, snapshot: Snapshot, selection: LineRange) -> Timeline:
         if snapshot.commit != self.commit or snapshot.path != self.path(snapshot.path):
             raise TrailError("This selection belongs to a different repository snapshot.")
@@ -243,9 +318,47 @@ def parse_history(output: bytes) -> tuple[HistoryEntry, ...]:
                 int(old_count) if old_count is not None else 1,
                 int(new_start),
                 int(new_count) if new_count is not None else 1,
+                patch_path(patch, "--- ", "a/"),
+                patch_path(patch, "+++ ", "b/"),
             )
         )
     return tuple(entries)
+
+
+def patch_path(patch: str, marker: str, prefix: str) -> str:
+    for line in patch.split("\n"):
+        if line.startswith("@@ "):
+            break
+        if not line.startswith(marker):
+            continue
+        value = line[len(marker):]
+        if value == "/dev/null":
+            return ""
+        if value.startswith('"'):
+            raw = bytearray()
+            value = value[1:-1]
+            escapes = {"n": 10, "r": 13, "t": 9, "b": 8, "f": 12, "v": 11, "a": 7}
+            index = 0
+            while index < len(value):
+                if value[index] != "\\":
+                    raw.extend(value[index].encode("utf-8"))
+                    index += 1
+                elif index + 1 < len(value) and value[index + 1] in "01234567":
+                    match = re.match(r"[0-7]{1,3}", value[index + 1:])
+                    raw.append(int(match.group(), 8))
+                    index += 1 + len(match.group())
+                elif index + 1 < len(value):
+                    raw.extend(bytes([escapes.get(value[index + 1], ord(value[index + 1]))]))
+                    index += 2
+                else:
+                    raise TrailError("Git returned an invalid quoted path.")
+            value = raw.decode("utf-8", errors="replace")
+        else:
+            value = value.removesuffix("\t")
+        if value.startswith(prefix):
+            return value[len(prefix):]
+        raise TrailError("Git returned an unexpected historical file path.")
+    return ""
 
 
 def canonical_date(value: bytes) -> str:

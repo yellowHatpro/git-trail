@@ -3,7 +3,8 @@
 A terminal app for answering: **when did this part of the file change?**
 
 Select a line, several lines, a paragraph, a function, or a class. Browse the commits
-that changed that selection and inspect each selected-range diff.
+that changed that selection, see the source at each revision, and inspect its diff.
+Search code, filter history, and read the full commit context without leaving your terminal.
 
 ![Git Trail showing source, its commit timeline, and a selected-range diff](docs/images/git-trail.svg)
 
@@ -39,13 +40,36 @@ With no arguments, the current directory is the repository.
 
 ## In the terminal
 
-The left pane searches files at your starting commit. The upper pane shows that
-commit's source with line numbers. The lower panes show the timeline and selected
-commit's diff, newest first.
+The scrollable sidebar searches files at your starting commit. Drag its right edge
+to adjust its width, focus the divider and use Left/Right, or press
+Ctrl+Shift+Left/Right. F2 hides or shows the sidebar. Terminal resizing keeps the
+source and history usable.
+
+The source pane follows the selected change. **After** shows its committed source;
+**Before** shows its first parent's source. The tracked lines are selected at their
+historical coordinates. **Starting** returns to the source from which you traced
+this timeline. Press F4 to cycle views. A file or selection that did not exist on
+one side is labeled explicitly.
+
+The lower panes show the filtered timeline and the selected range's diff.
+The **Commit** tab includes the full message, author and commit dates, and changed
+files. Ctrl+D switches between the diff and commit context. Tracing a selection in
+historical source starts a new timeline from that displayed revision.
+In compact terminals, the diff opens at its Git metadata. Scroll down to reach
+the changed lines.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+F | Focus file search; type a filter and press Enter to open |
+| Ctrl+O | Focus file search; type a filter and press Enter to open |
+| Ctrl+F | Find text or a function name in displayed code |
+| F3 / Shift+F3 | Next / previous code match, wrapping at the ends |
+| Ctrl+L | Focus the history filter |
+| Ctrl+D | Switch between diff and commit context |
+| F4 | Cycle After, Before, and Starting source views |
+| Ctrl+Y | Copy the selected commit SHA through the terminal clipboard |
+| Ctrl+Shift+Left / Right | Narrow / widen the sidebar |
+| F2 | Hide / show the sidebar |
+| F1 | Open the keyboard and filter guide |
 | Shift+arrows or mouse drag | Select source text |
 | Enter in source / Ctrl+T | Trace the current line or selected range |
 | Ctrl+G | Go to a line number |
@@ -55,12 +79,41 @@ commit's diff, newest first.
 | Ctrl+J / Ctrl+K | Older / newer change |
 | Up / Down in timeline | Select a change and update its diff |
 | Tab / Shift+Tab | Move between panes |
-| Escape | Close a selection dialog |
+| Escape | Close find or a selection dialog |
 | Ctrl+Q | Quit |
 
 For a whole class, choose it with Ctrl+B. Ctrl+S inside a method selects that method.
+The Ctrl+B picker also searches function and class names.
 Paragraphs are contiguous nonblank lines. Arbitrary text selections track every
 whole line touched by the selection.
+
+## Search and filters
+
+Ctrl+F opens find in the source pane. It searches the **displayed revision**.
+Use **Aa** for case-sensitive search and **.\*** for a regular expression.
+The match counter and selection update as you type. F3, Shift+F3, the arrow buttons,
+or Enter in the find field navigate matches. Escape returns focus to the code.
+
+File search accepts fuzzy path words and extension filters. Contiguous matches
+rank ahead of scattered matches. Multiple `ext:` terms include any listed extension.
+
+```text
+player ext:py
+src pricing ext:ts ext:tsx
+```
+
+History filters apply to the current selection's timeline. Plain words search the
+subject, author, SHA, and selected-range patch. Combine these with:
+
+```text
+author:"Jane Doe" after:2026-01-01 before:2026-12-31
+rounding author:Jane
+hash:a1b2c3
+```
+
+Dates use each commit's recorded calendar date and include both endpoints.
+All plain words and author terms must match. Clear the filter to restore every
+change. Invalid filters show an explanation and preserve the last valid results.
 
 ## CLI output
 
@@ -82,7 +135,8 @@ Unrelated edits are omitted. Git can follow simple file renames.
 
 Selection always uses a **committed snapshot**, HEAD by default. Uncommitted changes
 are excluded and called out. A historical `--ref` uses the file as it existed at
-that commit, even if the working tree differs.
+that commit, even if the working tree differs. Historical source views use the
+path recorded in the range diff, including earlier paths across simple renames.
 
 This is textual history. A copied, moved, split, or renamed function is not
 guaranteed to retain its identity. Merge traversal follows Git's range-history
@@ -118,6 +172,7 @@ Tests create temporary local repositories and exercise real Git range history,
 selectors, the CLI, and a headless Textual session. They do not use your
 repositories or require network access.
 
-All 166 checks pass with the pinned dependencies. A separate headless check
-verified function selection with a long string literal, the symbol picker,
-tracing, keyboard history navigation, and unchanged repository state.
+Coverage includes the long-function parser regression, real range history,
+mouse and keyboard scrolling/resizing, source search, combined filters,
+historical source across renames, full commit context, bounded caches, stale
+async results, and unchanged repository files and index.
