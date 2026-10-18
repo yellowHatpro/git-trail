@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+git_trail_source="${BASH_SOURCE[0]}"
+while [[ -L "$git_trail_source" ]]; do
+    git_trail_link_directory="$(CDPATH= cd -P -- "$(dirname -- "$git_trail_source")" && pwd)"
+    git_trail_source="$(readlink "$git_trail_source")"
+    if [[ "$git_trail_source" != /* ]]; then
+        git_trail_source="$git_trail_link_directory/$git_trail_source"
+    fi
+done
+git_trail_directory="$(CDPATH= cd -P -- "$(dirname -- "$git_trail_source")" && pwd)"
+git_trail_python="$git_trail_directory/.venv/bin/python"
+if [[ ! -x "$git_trail_python" ]]; then
+    printf '%s\n' "Git Trail needs its Python environment. See $git_trail_directory/README.md." >&2
+    exit 2
+fi
+exec "$git_trail_python" -I -c \
+    'import sys; sys.path.insert(0, sys.argv.pop(1)); from git_trail.cli import main; raise SystemExit(main())' \
+    "$git_trail_directory" "$@"
