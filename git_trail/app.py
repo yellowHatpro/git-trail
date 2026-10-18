@@ -23,6 +23,7 @@ from .filters import HistoryFilter, filter_files, find_matches
 from .git import HistoryEntry, LineRange, Repository, Snapshot, Timeline, TrailError, display_source
 from .selectors import enclosing_symbol, paragraph, symbols
 from .theme import BACKGROUND, EDITOR_THEME
+from .vim import VimCursor
 from .widgets import PaneDivider
 
 
@@ -48,12 +49,30 @@ class SourceView(TextArea):
     ]
 
     def __init__(self, *args, **kwargs):
+        self.vim = VimCursor()
         kwargs["theme"] = "css"
         super().__init__(*args, **kwargs)
         self.register_theme(EDITOR_THEME)
         self.theme = EDITOR_THEME.name
 
+    def load_text(self, text: str) -> None:
+        self.vim.reset()
+        super().load_text(text)
+        if self.is_mounted:
+            self.app.set_editor_mode("NORMAL")
+
+    def on_key(self, event: events.Key) -> None:
+        if self.app.handle_normal_key(event):
+            return
+        if self.vim.handle(self, event.character or event.key):
+            event.prevent_default()
+            event.stop()
+
+    def on_blur(self) -> None:
+        self.vim.leave_visual(self, collapse=False)
+
     def action_trace(self) -> None:
+        self.vim.leave_visual(self, collapse=False)
         self.app.action_trace()
 
     def action_paragraph(self) -> None:
@@ -211,6 +230,12 @@ class TrailApp(App):
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen { background: #1a1b26; color: #c0caf5; }
+    * {
+        scrollbar-background: #16161e; scrollbar-background-hover: #16161e;
+        scrollbar-background-active: #16161e; scrollbar-color: #3b4261;
+        scrollbar-color-hover: #565f89; scrollbar-color-active: #7aa2f7;
+        scrollbar-corner-color: #1a1b26; scrollbar-size-horizontal: 1;
+    }
     #workspace-title { height: 1; padding: 0 1; background: #16161e; color: #7aa2f7; text-style: bold; }
     #body { height: 1fr; }
     #files-pane { width: 24; min-width: 16; background: #16161e; }
@@ -283,6 +308,7 @@ class TrailApp(App):
     """
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
+        Binding("ctrl+w", "window_prefix", "Change pane", show=False, priority=True),
         Binding("ctrl+o", "find_file", "Files", priority=True),
         Binding("ctrl+f", "find_code", "Find code", priority=True),
         Binding("f3", "next_match", "Next match", show=False, priority=True),
@@ -327,6 +353,7 @@ class TrailApp(App):
         self._match_index = -1
         self._rendering_timeline = False
         self._prompt_origin = None
+        self._normal_prefix = ""
 
     def compose(self) -> ComposeResult:
         yield Static(f"Git Trail  /  {self.repository.root.name}  /  {self.repository.commit[:7]}", id="workspace-title")
@@ -405,9 +432,107 @@ class TrailApp(App):
     def status(self, message: str, error: bool = False) -> None:
         self.query_one("#status", Static).update(Text(message, style="#f49b9b" if error else "#9cafbf"))
 
+    def set_editor_mode(self, mode: str) -> None:
+        if self.query_one("#prompt-row").display:
+            mode = "PROMPT"
+        self.query_one("#mode", Static).update(mode)
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        self._normal_prefix = ""
+        if not isinstance(event.widget, SourceView) and not isinstance(self.screen, ModalScreen):
+            self.set_editor_mode("NORMAL")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "window_prefix":
+            return not isinstance(self.focused, Input) and not isinstance(self.screen, ModalScreen)
+        return True
+
+    def action_window_prefix(self) -> None:
+        self._normal_prefix = "window"
+        self.status("Ctrl+W  h/j/k/l: move to pane · w: next pane")
+
+    def focus_window(self, key: str) -> None:
+        review = "#commit-scroll" if self.query_one("#review-tabs", TabbedContent).active == "commit-tab" else "#diff-scroll"
+        panes = ["#files", "#source", "#timeline", review]
+        current = next((selector for selector in panes if self.query_one(selector) is self.focused), "#source")
+        if key == "w":
+            visible = [selector for selector in panes if self.query_one(selector).is_on_screen]
+            target = visible[(visible.index(current) + 1) % len(visible)] if current in visible else "#source"
+        else:
+            target = {
+                "#files": {"l": "#source"},
+                "#source": {"h": "#files", "j": "#timeline"},
+                "#timeline": {"h": "#files", "k": "#source", "l": review},
+                review: {"h": "#timeline", "k": "#source"},
+            }.get(current, {}).get(key, current)
+        if target == "#files" and not self._sidebar_visible:
+            self.action_toggle_sidebar()
+        self.query_one(target).focus()
+        self.status("NORMAL · / search · v/V select · Enter trace · Ctrl+W panes")
+
+    def on_key(self, event: events.Key) -> None:
+        if not isinstance(self.focused, SourceView):
+            self.handle_normal_key(event)
+
+    def handle_normal_key(self, event: events.Key) -> bool:
+        if isinstance(self.focused, Input) or isinstance(self.screen, ModalScreen):
+            return False
+        key = event.character or event.key
+        handled = True
+        if self._normal_prefix == "window":
+            self._normal_prefix = ""
+            self.focus_window(key)
+        elif key == "/":
+            if self.focused is self.query_one("#files"):
+                self.action_find_file()
+            elif self.focused is self.query_one("#timeline"):
+                self.action_find_history()
+            else:
+                self.action_find_code()
+        elif key in ("n", "N"):
+            self.action_next_match() if key == "n" else self.action_previous_match()
+        elif key == "?":
+            self.action_help()
+        elif key == "q":
+            self.exit()
+        elif isinstance(self.focused, OptionList) and key in ("j", "k", "g", "G"):
+            options = self.focused
+            if key == "g" and self._normal_prefix != "g":
+                self._normal_prefix = "g"
+            else:
+                if options.option_count:
+                    index = options.highlighted or 0
+                    options.highlighted = {
+                        "j": min(index + 1, options.option_count - 1), "k": max(0, index - 1),
+                        "g": 0, "G": options.option_count - 1,
+                    }[key]
+                    options.scroll_to_highlight()
+                self._normal_prefix = ""
+        elif isinstance(self.focused, VerticalScroll) and key in ("j", "k", "g", "G", "h", "l"):
+            pane = self.focused
+            if key == "g" and self._normal_prefix != "g":
+                self._normal_prefix = "g"
+            else:
+                if key in ("j", "k"):
+                    pane.scroll_relative(y=1 if key == "j" else -1, animate=False)
+                elif key in ("h", "l"):
+                    pane.scroll_relative(x=1 if key == "l" else -1, animate=False)
+                else:
+                    pane.scroll_to(y=0 if key == "g" else pane.max_scroll_y, animate=False)
+                self._normal_prefix = ""
+        else:
+            self._normal_prefix = ""
+            handled = False
+        if handled:
+            event.prevent_default()
+            event.stop()
+        return handled
+
     def open_prompt(self, target: str) -> None:
         if not self.query_one("#prompt-row").display:
             self._prompt_origin = self.focused
+        self._normal_prefix = ""
+        self.query_one("#source", SourceView).vim.leave_visual(self.query_one("#source", SourceView), collapse=False)
         self.query_one("#prompt-row").display = True
         for selector in ("#file-filter", "#history-filter", "#find-bar"):
             self.query_one(selector).display = selector == target
@@ -426,7 +551,11 @@ class TrailApp(App):
 
     @on(TextArea.SelectionChanged, "#source")
     def source_selection_changed(self, event: TextArea.SelectionChanged) -> None:
-        row, column = event.selection.end
+        source = self.query_one("#source", SourceView)
+        if source.selection != source.vim.expected:
+            source.vim.sync(source)
+            self.set_editor_mode("NORMAL")
+        row, column = source.vim.cursor if source.vim.mode != "NORMAL" else source.selection.end
         self.query_one("#position", Static).update(f"{row + 1}:{column + 1}")
 
     def filter_files(self, query: str) -> None:
@@ -497,7 +626,7 @@ class TrailApp(App):
         source = self.query_one("#source", SourceView)
         self.display_snapshot(snapshot)
         source.focus()
-        message = "Shift+arrows selects a range · Enter traces · Ctrl+B lists symbols"
+        message = "NORMAL · v/V selects · Enter traces · / finds · Ctrl+W panes · ? help"
         if snapshot.working_tree_changed:
             message = "Local edits exist. Showing committed source. " + message
         self.status(message)
@@ -542,6 +671,8 @@ class TrailApp(App):
         except TrailError as error:
             self.status(str(error), error=True)
             return
+        source = self.query_one("#source", SourceView)
+        source.vim.leave_visual(source, collapse=False)
         self.run_worker(
             self.trace_selection(selection), group="history", exclusive=True, exit_on_error=False
         )
@@ -816,6 +947,7 @@ class TrailApp(App):
         self.refresh_search()
 
     def action_close_find(self) -> None:
+        self._normal_prefix = ""
         if self.query_one("#prompt-row").display:
             self.close_prompt()
             origin = self._prompt_origin
@@ -823,6 +955,8 @@ class TrailApp(App):
                 origin.focus()
             else:
                 self.query_one("#source" if self.snapshot else "#files").focus()
+        elif isinstance(self.focused, SourceView):
+            self.focused.vim.leave_visual(self.focused)
 
     @on(Input.Changed, "#find-input")
     @on(Checkbox.Changed, "#find-case, #find-regex")
@@ -831,7 +965,8 @@ class TrailApp(App):
 
     @on(Input.Submitted, "#find-input")
     def find_submitted(self) -> None:
-        self.action_next_match()
+        self.close_prompt()
+        self.query_one("#source", SourceView).focus()
 
     @on(Button.Pressed, "#find-next")
     def next_pressed(self) -> None:
@@ -845,7 +980,7 @@ class TrailApp(App):
         self._search_matches = ()
         self._match_index = -1
         field = self.query_one("#find-input", Input)
-        if not field.value or not self.query_one("#find-bar").display:
+        if not field.value:
             self.query_one("#find-count", Static).update("")
             return
         try:
@@ -858,8 +993,10 @@ class TrailApp(App):
             self.query_one("#find-count", Static).update("Invalid")
             self.status(str(error), error=True)
             return
-        if self._search_matches:
+        if self._search_matches and self.query_one("#find-bar").display:
             self.show_match(0)
+        elif self._search_matches:
+            self.query_one("#find-count", Static).update(f"{len(self._search_matches)} matches")
         else:
             self.query_one("#find-count", Static).update("0 matches")
 
@@ -869,15 +1006,18 @@ class TrailApp(App):
         self._match_index = index % len(self._search_matches)
         start, end = self._search_matches[self._match_index]
         source = self.query_one("#source", SourceView)
+        source.vim.reset()
         source.move_cursor(start, center=True)
         source.move_cursor(end, select=True)
         self.query_one("#find-count", Static).update(f"{self._match_index + 1}/{len(self._search_matches)}")
+        if not self.query_one("#find-bar").display:
+            self.status(f"/{self.query_one('#find-input', Input).value} · {self._match_index + 1}/{len(self._search_matches)}")
 
     def action_next_match(self) -> None:
         self.show_match(self._match_index + 1)
 
     def action_previous_match(self) -> None:
-        self.show_match(self._match_index - 1)
+        self.show_match(self._match_index - 1 if self._match_index >= 0 else -1)
 
     def resize_sidebar(self, width: int, *, available: int | None = None) -> None:
         if available is None:
