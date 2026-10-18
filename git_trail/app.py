@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, OptionList, Static, TabbedContent, TabPane, TextArea
+from textual.widgets import Button, Checkbox, Input, Label, OptionList, Static, TabbedContent, TabPane, TextArea
 from textual.widgets.option_list import Option
 from tree_sitter import QueryError
 from tree_sitter_language_pack import get_language
@@ -22,17 +22,18 @@ from tree_sitter_language_pack import get_language
 from .filters import HistoryFilter, filter_files, find_matches
 from .git import HistoryEntry, LineRange, Repository, Snapshot, Timeline, TrailError, display_source
 from .selectors import enclosing_symbol, paragraph, symbols
+from .theme import BACKGROUND, EDITOR_THEME
 from .widgets import PaneDivider
 
 
 class DiffStyle(PygmentsStyle):
-    background_color = "#10182b"
+    background_color = BACKGROUND
     styles = {
-        Token: "#dbe4f0",
-        Generic.Deleted: "#fda4af",
-        Generic.Inserted: "#86efac",
-        Generic.Heading: "bold #a5b4fc",
-        Generic.Subheading: "#67e8f9",
+        Token: "#c0caf5",
+        Generic.Deleted: "#f7768e",
+        Generic.Inserted: "#9ece6a",
+        Generic.Heading: "#565f89",
+        Generic.Subheading: "#7aa2f7",
     }
 
 
@@ -45,6 +46,12 @@ class SourceView(TextArea):
         Binding("ctrl+p", "paragraph", "Paragraph", priority=True),
         Binding("ctrl+s", "symbol", "Containing symbol", priority=True),
     ]
+
+    def __init__(self, *args, **kwargs):
+        kwargs["theme"] = "css"
+        super().__init__(*args, **kwargs)
+        self.register_theme(EDITOR_THEME)
+        self.theme = EDITOR_THEME.name
 
     def action_trace(self) -> None:
         self.app.action_trace()
@@ -203,75 +210,75 @@ class TrailApp(App):
     SUB_TITLE = "Source · History · Context"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
-    Screen { background: #0b1020; color: #dbe4f0; }
-    Header { background: #151d33; color: #c7d2fe; }
-    Footer { background: #151d33; color: #94a3b8; }
-    #body { height: 1fr; padding: 1 1 0 1; }
-    #files-pane { width: 30; min-width: 16; background: #10182b; border: round #25324c; }
-    #sidebar-divider { width: 1; color: #3d4d72; }
-    #sidebar-divider:hover, #sidebar-divider:focus { color: #a5b4fc; background: #1f2b4c; }
+    Screen { background: #1a1b26; color: #c0caf5; }
+    #workspace-title { height: 1; padding: 0 1; background: #16161e; color: #7aa2f7; text-style: bold; }
+    #body { height: 1fr; }
+    #files-pane { width: 24; min-width: 16; background: #16161e; }
+    #sidebar-divider { width: 1; color: #292e42; }
+    #sidebar-divider:hover, #sidebar-divider:focus { color: #7aa2f7; }
     #files-title, #source-title, #timeline-title, #diff-title {
-        height: 1; padding: 0 1; color: #a5b4fc; text-style: bold;
+        height: 1; padding: 0 1; color: #a9b1d6; background: #24283b; text-wrap: nowrap; text-overflow: ellipsis;
     }
-    #file-filter { margin: 0 1; height: 3; }
-    Input { border: tall #334361; background: #131e34; }
-    Input:focus { border: tall #818cf8; }
-    #files { height: 1fr; min-height: 0; max-height: 100%; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: #10182b; padding: 0 1; text-wrap: nowrap; text-overflow: ellipsis; }
-    #file-note { height: 1; padding: 0 1; color: #64748b; }
-    OptionList > .option-list--option-highlighted { background: #243357; color: #e0e7ff; text-style: bold; }
-    OptionList:focus > .option-list--option-highlighted { background: #373f78; color: #ffffff; }
-    OptionList > .option-list--option-hover { background: #1c2945; }
+    Input, Input:focus { height: 1; border: none; padding: 0; background: #16161e; color: #c0caf5; }
+    Input > .input--placeholder { color: #565f89; }
+    Input > .input--cursor { background: #c0caf5; color: #1a1b26; }
+    #files { height: 1fr; min-height: 0; max-height: 100%; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: #16161e; padding: 0 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    OptionList > .option-list--option-highlighted { background: #24283b; color: #c0caf5; }
+    OptionList:focus > .option-list--option-highlighted { background: #283457; color: #7aa2f7; }
+    OptionList > .option-list--option-hover { background: #24283b; }
     #workspace { width: 1fr; }
-    #source-pane { height: 3fr; min-height: 6; border: round #25324c; background: #10182b; }
-    #source-pane:focus-within { border: round #6573bd; }
-    #source-toolbar { height: 1; margin: 0 1; }
-    #source-toolbar Button { height: 1; min-width: 10; width: auto; padding: 0 1; border: none; background: #19253f; color: #94a3b8; }
-    #source-toolbar Button.active { background: #373f78; color: #e0e7ff; text-style: bold; }
-    #source-note { height: 1; color: #7e91b5; padding: 0 1; }
-    #source { height: 1fr; min-height: 0; border: none; background: #10182b; scrollbar-size-vertical: 1; }
+    #source-pane { height: 3fr; min-height: 6; background: #1a1b26; }
+    #source-heading { height: 1; background: #24283b; }
+    #source-title { width: 1fr; }
+    #source-toolbar { height: 1; width: 26; }
+    #source-toolbar Button { height: 1; min-width: 6; width: auto; padding: 0 1; border: none; background: #24283b; color: #565f89; }
+    #source-toolbar Button.active { color: #7aa2f7; text-style: bold; }
+    #source-note { display: none; height: 1; color: #e0af68; padding: 0 1; }
+    #source-note.important { display: block; }
+    #source { height: 1fr; min-height: 0; border: none; background: #1a1b26; scrollbar-size-vertical: 1; }
     #source:focus { border: none; }
-    #find-bar { height: 3; margin: 0 1; }
+    #prompt-row { height: 1; background: #16161e; padding: 0 1; }
+    #prompt-label { height: 1; width: auto; min-width: 2; color: #7aa2f7; }
+    #file-filter, #history-filter { height: 1; width: 1fr; }
+    #find-bar { height: 1; width: 1fr; }
     #find-input { width: 1fr; }
-    #find-bar Button { min-width: 3; width: 3; height: 3; padding: 0; }
-    #find-bar Checkbox { width: 8; min-width: 8; height: 3; padding: 0; border: none; }
+    #find-bar Button { min-width: 3; width: 3; height: 1; padding: 0; border: none; background: #16161e; color: #7aa2f7; }
+    #find-bar Checkbox { width: 8; min-width: 8; height: 1; padding: 0; border: none; background: #16161e; }
     #find-count { width: 9; content-align: center middle; color: #a5b4fc; }
-    #history-pane { height: 2fr; min-height: 7; margin-top: 1; }
-    #timeline-pane { width: 34%; min-width: 22; border: round #25324c; background: #10182b; }
-    #history-filter { height: 3; margin: 0 1; }
-    #timeline { height: 1fr; min-height: 0; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: #10182b; padding: 0 1; }
+    #find-case, #find-regex, #find-next, #find-previous { display: none; }
+    #history-pane { height: 2fr; min-height: 6; border-top: solid #292e42; }
+    #timeline-pane { width: 34%; min-width: 22; background: #1a1b26; border-right: solid #292e42; }
+    #timeline { height: 1fr; min-height: 0; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: #1a1b26; padding: 0 1; }
     #diff-pane { width: 1fr; }
-    #review-tabs { height: 1fr; border: round #25324c; background: #10182b; }
+    #review-tabs { height: 1fr; background: #1a1b26; }
     TabPane { padding: 0; }
     ContentSwitcher { height: 1fr; }
-    Tabs { height: 2; }
+    Tabs { height: 1; background: #24283b; }
+    Tabs > .tabs-list { height: 1; }
+    Tab { padding: 0 1; height: 1; color: #565f89; }
+    Tab.-active { color: #7aa2f7; background: #24283b; }
+    Underline { display: none; }
     #diff-scroll, #commit-scroll { height: 1fr; padding: 0 1; overflow-x: auto; scrollbar-size-vertical: 1; }
     #diff { width: auto; min-width: 100%; height: auto; }
     #commit-details { height: auto; }
-    #status { height: 2; padding: 0 2; color: #8fa3c5; background: #0b1020; }
+    #statusline { height: 1; background: #24283b; }
+    #mode { width: 9; content-align: center middle; background: #7aa2f7; color: #1a1b26; text-style: bold; }
+    #status { height: 1; width: 1fr; padding: 0 1; color: #a9b1d6; text-wrap: nowrap; text-overflow: ellipsis; }
+    #position { width: 14; height: 1; color: #565f89; content-align: right middle; padding: 0 1; }
     JumpScreen, SymbolScreen, HelpScreen { align: center middle; background: #000000 65%; }
     #jump-dialog {
-        width: 54; height: auto; padding: 1 2; border: thick #62bfa5;
-        background: #152331;
+        width: 54; height: auto; padding: 1 2; border: round #3b4261;
+        background: #16161e;
     }
     #jump-input { margin: 1 0; }
     #jump-message { height: auto; }
     #symbol-dialog {
         width: 80%; max-width: 100; height: 75%; padding: 1 2;
-        border: thick #62bfa5; background: #152331;
+        border: round #3b4261; background: #16161e;
     }
-    #symbol-filter { height: 3; }
+    #symbol-filter { height: 1; }
     #symbol-options { height: 1fr; margin: 1 0; }
-    #help-dialog { width: 80; max-width: 95%; height: auto; max-height: 90%; padding: 1 3; border: round #818cf8; background: #131e34; }
-    Screen.compact #body { padding: 0; }
-    Screen.compact #history-pane { margin-top: 0; }
-    Screen.compact #source-pane { height: 1fr; }
-    Screen.compact #history-pane { height: 1fr; }
-    Screen.compact #source-note { display: none; }
-    Screen.compact #source-note.important { display: block; }
-    Screen.compact #find-bar { height: 1; }
-    Screen.compact #find-bar Input { height: 1; border: none; padding: 0; }
-    Screen.compact #find-bar Button, Screen.compact #find-bar Checkbox { height: 1; border: none; padding: 0; }
-    Screen.compact #find-count { width: 7; }
+    #help-dialog { width: 80; max-width: 95%; height: auto; max-height: 90%; padding: 1 3; border: round #3b4261; background: #16161e; }
     Screen.compact #timeline { text-wrap: nowrap; text-overflow: ellipsis; }
     """
     BINDINGS = [
@@ -314,36 +321,29 @@ class TrailApp(App):
         self.filtered_entries: tuple[HistoryEntry, ...] = ()
         self.selected_entry: HistoryEntry | None = None
         self.source_mode = "after"
-        self.sidebar_width = 30
+        self.sidebar_width = 24
         self._sidebar_visible = True
         self._search_matches = ()
         self._match_index = -1
         self._rendering_timeline = False
+        self._prompt_origin = None
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static(f"Git Trail  /  {self.repository.root.name}  /  {self.repository.commit[:7]}", id="workspace-title")
         with Horizontal(id="body"):
             with Vertical(id="files-pane"):
                 yield Static("FILES", id="files-title")
-                yield Input(placeholder="Find file · ext:py", id="file-filter")
                 yield OptionList(id="files", markup=False)
-                yield Static("Ctrl+O  ·  drag edge to resize", id="file-note")
             yield PaneDivider(id="sidebar-divider", tooltip="Drag to resize. Left/Right when focused.")
             with Vertical(id="workspace"):
                 with Vertical(id="source-pane"):
-                    yield Static("SOURCE · choose a file", id="source-title")
-                    with Horizontal(id="source-toolbar"):
-                        yield Button("After", id="view-after", classes="active", compact=True)
-                        yield Button("Before", id="view-before", compact=True)
-                        yield Button("Starting", id="view-starting", compact=True)
+                    with Horizontal(id="source-heading"):
+                        yield Static("SOURCE · choose a file", id="source-title")
+                        with Horizontal(id="source-toolbar"):
+                            yield Button("After", id="view-after", classes="active", compact=True)
+                            yield Button("Before", id="view-before", compact=True)
+                            yield Button("Starting", id="view-starting", compact=True)
                     yield Static("Committed source · Ctrl+F to find", id="source-note")
-                    with Horizontal(id="find-bar"):
-                        yield Input(placeholder="Find text or function name…", id="find-input")
-                        yield Checkbox("Aa", id="find-case", tooltip="Match case")
-                        yield Checkbox(".*", id="find-regex", tooltip="Regular expression")
-                        yield Button("↑", id="find-previous", tooltip="Previous match (Shift+F3)")
-                        yield Button("↓", id="find-next", tooltip="Next match (F3)")
-                        yield Static("", id="find-count")
                     yield SourceView(
                         read_only=True, show_line_numbers=True, soft_wrap=False,
                         id="source", tab_behavior="focus", theme="dracula",
@@ -351,7 +351,6 @@ class TrailApp(App):
                 with Horizontal(id="history-pane"):
                     with Vertical(id="timeline-pane"):
                         yield Static("TIMELINE", id="timeline-title")
-                        yield Input(placeholder="Filter · author: / after:", id="history-filter")
                         yield OptionList(id="timeline", markup=False)
                     with Vertical(id="diff-pane"):
                         with TabbedContent(id="review-tabs"):
@@ -368,11 +367,24 @@ class TrailApp(App):
                             with TabPane("Commit", id="commit-tab"):
                                 with VerticalScroll(id="commit-scroll"):
                                     yield Static("Trace a selection to explore commit context.", id="commit-details", markup=False)
-        yield Static("Reading repository…", id="status", markup=False)
-        yield Footer()
+        with Horizontal(id="prompt-row"):
+            yield Static("", id="prompt-label")
+            yield Input(placeholder="fuzzy path or ext:py", id="file-filter")
+            yield Input(placeholder="author: / after: / text", id="history-filter")
+            with Horizontal(id="find-bar"):
+                yield Input(placeholder="find text or function", id="find-input")
+                yield Checkbox("Aa", id="find-case", tooltip="Match case")
+                yield Checkbox(".*", id="find-regex", tooltip="Regular expression")
+                yield Button("↑", id="find-previous", tooltip="Previous match (Shift+F3)")
+                yield Button("↓", id="find-next", tooltip="Next match (F3)")
+                yield Static("", id="find-count")
+        with Horizontal(id="statusline"):
+            yield Static("NORMAL", id="mode")
+            yield Static("Reading repository…", id="status", markup=False)
+            yield Static("", id="position")
 
     async def on_mount(self) -> None:
-        self.query_one("#find-bar").display = False
+        self.close_prompt()
         self.resize_sidebar(self.sidebar_width)
         self.screen.set_class(self.size.width < 100 or self.size.height < 30, "compact")
         self.sub_title = f"{self.repository.root.name} · {self.repository.commit[:10]}"
@@ -388,10 +400,34 @@ class TrailApp(App):
             self.status(
                 "Choose a file. All source and selections use the starting commit, HEAD by default."
             )
-            self.query_one("#file-filter", Input).focus()
+            self.action_find_file()
 
     def status(self, message: str, error: bool = False) -> None:
         self.query_one("#status", Static).update(Text(message, style="#f49b9b" if error else "#9cafbf"))
+
+    def open_prompt(self, target: str) -> None:
+        if not self.query_one("#prompt-row").display:
+            self._prompt_origin = self.focused
+        self.query_one("#prompt-row").display = True
+        for selector in ("#file-filter", "#history-filter", "#find-bar"):
+            self.query_one(selector).display = selector == target
+        self.query_one("#mode", Static).update("PROMPT")
+        self.query_one("#prompt-label", Static).update({
+            "#file-filter": "files > ", "#history-filter": "filter > ", "#find-bar": "/ ",
+        }[target])
+        field = "#find-input" if target == "#find-bar" else target
+        self.query_one(field, Input).focus()
+
+    def close_prompt(self) -> None:
+        self.query_one("#prompt-row").display = False
+        for selector in ("#file-filter", "#history-filter", "#find-bar"):
+            self.query_one(selector).display = False
+        self.query_one("#mode", Static).update("NORMAL")
+
+    @on(TextArea.SelectionChanged, "#source")
+    def source_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        row, column = event.selection.end
+        self.query_one("#position", Static).update(f"{row + 1}:{column + 1}")
 
     def filter_files(self, query: str) -> None:
         try:
@@ -427,6 +463,7 @@ class TrailApp(App):
         self.run_worker(self.load_file(path), group="file", exclusive=True, exit_on_error=False)
 
     async def load_file(self, path: str, selection: LineRange | None = None) -> None:
+        self.close_prompt()
         self._load_generation += 1
         generation = self._load_generation
         self._history_generation += 1
@@ -596,6 +633,7 @@ class TrailApp(App):
 
     @on(Input.Submitted, "#history-filter")
     def history_filter_submitted(self) -> None:
+        self.close_prompt()
         self.query_one("#timeline", OptionList).focus()
 
     @on(OptionList.OptionHighlighted, "#timeline")
@@ -612,12 +650,7 @@ class TrailApp(App):
         self.query_one("#diff-title", Static).update(
             Text(f"{entry.commit[:10]} · {entry.author} · committed {entry.committed_at}")
         )
-        self.query_one("#diff", Static).update(
-            Syntax(
-                display_source(entry.patch), "diff", theme=DIFF_THEME,
-                word_wrap=False, background_color="#10182b",
-            )
-        )
+        self.render_diff()
         self.call_after_refresh(self.position_diff)
         self._view_generation += 1
         generation = self._view_generation
@@ -705,7 +738,7 @@ class TrailApp(App):
     def action_find_file(self) -> None:
         if not self._sidebar_visible:
             self.action_toggle_sidebar()
-        self.query_one("#file-filter", Input).focus()
+        self.open_prompt("#file-filter")
 
     def display_snapshot(self, snapshot: Snapshot) -> None:
         source = self.query_one("#source", SourceView)
@@ -716,7 +749,7 @@ class TrailApp(App):
         }.get(PurePosixPath(snapshot.path).suffix.lower())
         source.configure_language(language)
         source.load_text(display_source(snapshot.text))
-        self.query_one("#source-title", Static).update(Text(f"{snapshot.path}  ·  {snapshot.commit[:10]}"))
+        self.query_one("#source-title", Static).update(Text(f"{snapshot.path} · {snapshot.commit[:7]}"))
         self.query_one("#source-note", Static).update("Committed source · Ctrl+F to find")
         self.query_one("#source-note", Static).remove_class("important")
         self.refresh_search()
@@ -724,13 +757,20 @@ class TrailApp(App):
     def position_diff(self) -> None:
         if self.selected_entry is None:
             return
-        line = 0
+        self.render_diff()
+        self.query_one("#diff-scroll", VerticalScroll).scroll_to(y=0, animate=False, immediate=True)
+
+    def render_diff(self) -> None:
+        if self.selected_entry is None:
+            return
+        patch = display_source(self.selected_entry.patch)
         if self.screen.has_class("compact"):
-            line = next(
-                (index for index, value in enumerate(self.selected_entry.patch.split("\n")) if value.startswith("@@ ")),
-                0,
-            )
-        self.query_one("#diff-scroll", VerticalScroll).scroll_to(y=line, animate=False, immediate=True)
+            offset = patch.find("\n@@ ")
+            if offset >= 0:
+                patch = patch[offset + 1:]
+        self.query_one("#diff", Static).update(
+            Syntax(patch, "diff", theme=DIFF_THEME, word_wrap=False, background_color=BACKGROUND)
+        )
 
     @on(Button.Pressed, "#view-after, #view-before, #view-starting")
     def source_view_pressed(self, event: Button.Pressed) -> None:
@@ -760,13 +800,13 @@ class TrailApp(App):
             self.status(f"Copied commit {self.selected_entry.commit[:10]} (terminal clipboard support required).")
 
     def action_find_history(self) -> None:
-        self.query_one("#history-filter", Input).focus()
+        self.open_prompt("#history-filter")
 
     def action_find_code(self) -> None:
         if self.snapshot is None:
             self.status("Choose a file or source revision first.", error=True)
             return
-        self.query_one("#find-bar").display = True
+        self.open_prompt("#find-bar")
         field = self.query_one("#find-input", Input)
         source = self.query_one("#source", SourceView)
         selected = source.selected_text
@@ -776,9 +816,13 @@ class TrailApp(App):
         self.refresh_search()
 
     def action_close_find(self) -> None:
-        if self.query_one("#find-bar").display:
-            self.query_one("#find-bar").display = False
-            self.query_one("#source", SourceView).focus()
+        if self.query_one("#prompt-row").display:
+            self.close_prompt()
+            origin = self._prompt_origin
+            if origin is not None and origin.display and origin.is_mounted:
+                origin.focus()
+            else:
+                self.query_one("#source" if self.snapshot else "#files").focus()
 
     @on(Input.Changed, "#find-input")
     @on(Checkbox.Changed, "#find-case, #find-regex")
@@ -861,12 +905,14 @@ class TrailApp(App):
         self.query_one("#source", SourceView).focus()
 
     def action_help(self) -> None:
+        self.close_prompt()
         self.push_screen(HelpScreen())
 
     def action_jump(self) -> None:
         if self.snapshot is None:
             self.status("Choose a file first.", error=True)
             return
+        self.close_prompt()
         self.push_screen(JumpScreen(len(self.snapshot.lines)), self.jump_to)
 
     def jump_to(self, line: int | None) -> None:
@@ -898,6 +944,7 @@ class TrailApp(App):
         if self.snapshot is None:
             self.status("Choose a file first.", error=True)
             return
+        self.close_prompt()
         try:
             screen = SymbolScreen(self.snapshot)
         except TrailError as error:
