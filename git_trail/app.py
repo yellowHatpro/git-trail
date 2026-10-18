@@ -127,7 +127,11 @@ class JumpScreen(ModalScreen[int | None]):
 
 
 class SymbolScreen(ModalScreen[LineRange | None]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+n,down", "next_result", "Next result", priority=True),
+        Binding("ctrl+p,up", "previous_result", "Previous result", priority=True),
+    ]
 
     def __init__(self, snapshot: Snapshot):
         super().__init__()
@@ -182,6 +186,18 @@ class SymbolScreen(ModalScreen[LineRange | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def move_result(self, delta: int) -> None:
+        options = self.query_one("#symbol-options", OptionList)
+        if options.option_count:
+            options.highlighted = max(0, min((options.highlighted or 0) + delta, options.option_count - 1))
+            options.scroll_to_highlight()
+
+    def action_next_result(self) -> None:
+        self.move_result(1)
+
+    def action_previous_result(self) -> None:
+        self.move_result(-1)
+
 
 class HelpScreen(ModalScreen):
     BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("f1", "dismiss", "Close")]
@@ -190,6 +206,18 @@ class HelpScreen(ModalScreen):
         with VerticalScroll(id="help-dialog"):
             yield Static(Text.from_markup(
                 "[bold #a5b4fc]GIT TRAIL  /  KEYBOARD & FILTERS[/]\n\n"
+                "[bold]Normal / Visual[/]\n"
+                "h j k l  Move      w / b  Words      0 / $  Line ends\n"
+                "gg / G  First / last line     3j / 42gg  Counts\n"
+                "v / V  Character / line selection     Enter  Trace\n"
+                "Escape  Normal mode     /  Find     n / N  Matches\n"
+                "Ctrl+W then h j k l  Change pane     Ctrl+W w  Cycle\n"
+                "Space f f / f s / f h  Files / symbols / history\n"
+                ":42  Go to line     :help  Guide     :q  Quit\n"
+                ":set ignorecase / noignorecase     :set regex / noregex\n"
+                ":before / :after / :starting     :diff / :commit\n"
+                ":file ext:py     :filter author:Jane     :symbols\n"
+                "Ctrl+N/P or Up/Down  Picker results, Enter accepts\n\n"
                 "[bold]Explore[/]\n"
                 "Ctrl+O  Find a file     Ctrl+B  Find a function/class\n"
                 "Ctrl+G  Go to line      Ctrl+F  Find in displayed code\n"
@@ -244,6 +272,8 @@ class TrailApp(App):
     #files-title, #source-title, #timeline-title, #diff-title {
         height: 1; padding: 0 1; color: #a9b1d6; background: #24283b; text-wrap: nowrap; text-overflow: ellipsis;
     }
+    #files-pane:focus-within #files-title, #source-pane:focus-within #source-title,
+    #timeline-pane:focus-within #timeline-title, #diff-pane:focus-within #diff-title { color: #7aa2f7; }
     Input, Input:focus { height: 1; border: none; padding: 0; background: #16161e; color: #c0caf5; }
     Input > .input--placeholder { color: #565f89; }
     Input > .input--cursor { background: #c0caf5; color: #1a1b26; }
@@ -264,7 +294,7 @@ class TrailApp(App):
     #source:focus { border: none; }
     #prompt-row { height: 1; background: #16161e; padding: 0 1; }
     #prompt-label { height: 1; width: auto; min-width: 2; color: #7aa2f7; }
-    #file-filter, #history-filter { height: 1; width: 1fr; }
+    #file-filter, #history-filter, #command-input { height: 1; width: 1fr; }
     #find-bar { height: 1; width: 1fr; }
     #find-input { width: 1fr; }
     #find-bar Button { min-width: 3; width: 3; height: 1; padding: 0; border: none; background: #16161e; color: #7aa2f7; }
@@ -288,6 +318,8 @@ class TrailApp(App):
     #commit-details { height: auto; }
     #statusline { height: 1; background: #24283b; }
     #mode { width: 9; content-align: center middle; background: #7aa2f7; color: #1a1b26; text-style: bold; }
+    #mode.visual { background: #bb9af7; }
+    #mode.prompt { background: #9ece6a; }
     #status { height: 1; width: 1fr; padding: 0 1; color: #a9b1d6; text-wrap: nowrap; text-overflow: ellipsis; }
     #position { width: 14; height: 1; color: #565f89; content-align: right middle; padding: 0 1; }
     JumpScreen, SymbolScreen, HelpScreen { align: center middle; background: #000000 65%; }
@@ -309,6 +341,8 @@ class TrailApp(App):
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
         Binding("ctrl+w", "window_prefix", "Change pane", show=False, priority=True),
+        Binding("ctrl+n,down", "prompt_next", "Next result", show=False, priority=True),
+        Binding("up", "prompt_previous", "Previous result", show=False, priority=True),
         Binding("ctrl+o", "find_file", "Files", priority=True),
         Binding("ctrl+f", "find_code", "Find code", priority=True),
         Binding("f3", "next_match", "Next match", show=False, priority=True),
@@ -369,7 +403,7 @@ class TrailApp(App):
                         with Horizontal(id="source-toolbar"):
                             yield Button("After", id="view-after", classes="active", compact=True)
                             yield Button("Before", id="view-before", compact=True)
-                            yield Button("Starting", id="view-starting", compact=True)
+                            yield Button("Start", id="view-starting", compact=True, tooltip="Starting source for this timeline")
                     yield Static("Committed source · Ctrl+F to find", id="source-note")
                     yield SourceView(
                         read_only=True, show_line_numbers=True, soft_wrap=False,
@@ -398,6 +432,7 @@ class TrailApp(App):
             yield Static("", id="prompt-label")
             yield Input(placeholder="fuzzy path or ext:py", id="file-filter")
             yield Input(placeholder="author: / after: / text", id="history-filter")
+            yield Input(placeholder="help · files · symbols · filter · set ignorecase", id="command-input")
             with Horizontal(id="find-bar"):
                 yield Input(placeholder="find text or function", id="find-input")
                 yield Checkbox("Aa", id="find-case", tooltip="Match case")
@@ -435,7 +470,10 @@ class TrailApp(App):
     def set_editor_mode(self, mode: str) -> None:
         if self.query_one("#prompt-row").display:
             mode = "PROMPT"
-        self.query_one("#mode", Static).update(mode)
+        indicator = self.query_one("#mode", Static)
+        indicator.update(mode)
+        indicator.set_class(mode.startswith("V"), "visual")
+        indicator.set_class(mode == "PROMPT", "prompt")
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         self._normal_prefix = ""
@@ -445,9 +483,17 @@ class TrailApp(App):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "window_prefix":
             return not isinstance(self.focused, Input) and not isinstance(self.screen, ModalScreen)
+        if action in ("prompt_next", "prompt_previous"):
+            return isinstance(self.focused, Input) and self.focused.id in ("file-filter", "history-filter") and not isinstance(self.screen, ModalScreen)
+        if action == "paragraph":
+            return not isinstance(self.screen, ModalScreen) and (
+                not isinstance(self.focused, Input) or self.focused.id in ("file-filter", "history-filter")
+            )
         return True
 
     def action_window_prefix(self) -> None:
+        source = self.query_one("#source", SourceView)
+        source.vim.leave_visual(source, collapse=False)
         self._normal_prefix = "window"
         self.status("Ctrl+W  h/j/k/l: move to pane · w: next pane")
 
@@ -470,6 +516,19 @@ class TrailApp(App):
         self.query_one(target).focus()
         self.status("NORMAL · / search · v/V select · Enter trace · Ctrl+W panes")
 
+    def prompt_result(self, delta: int) -> None:
+        selector = "#files" if self.focused and self.focused.id == "file-filter" else "#timeline"
+        options = self.query_one(selector, OptionList)
+        if options.option_count:
+            options.highlighted = max(0, min((options.highlighted or 0) + delta, options.option_count - 1))
+            options.scroll_to_highlight()
+
+    def action_prompt_next(self) -> None:
+        self.prompt_result(1)
+
+    def action_prompt_previous(self) -> None:
+        self.prompt_result(-1)
+
     def on_key(self, event: events.Key) -> None:
         if not isinstance(self.focused, SourceView):
             self.handle_normal_key(event)
@@ -482,6 +541,23 @@ class TrailApp(App):
         if self._normal_prefix == "window":
             self._normal_prefix = ""
             self.focus_window(key)
+        elif self._normal_prefix in ("leader", "leader-find"):
+            prefix = self._normal_prefix
+            self._normal_prefix = ""
+            if prefix == "leader" and key == "f":
+                self._normal_prefix = "leader-find"
+                self.status("Space f  f: files · s: symbols · h: history")
+            elif prefix == "leader-find" and key in ("f", "s", "h"):
+                {"f": self.action_find_file, "s": self.action_browse_symbols, "h": self.action_find_history}[key]()
+            else:
+                self.status("Sequence cancelled · ? help")
+        elif key == " ":
+            source = self.query_one("#source", SourceView)
+            source.vim.leave_visual(source, collapse=False)
+            self._normal_prefix = "leader"
+            self.status("Space  f: find files, symbols, or history · Escape cancels")
+        elif key == ":":
+            self.action_command()
         elif key == "/":
             if self.focused is self.query_one("#files"):
                 self.action_find_file()
@@ -534,20 +610,20 @@ class TrailApp(App):
         self._normal_prefix = ""
         self.query_one("#source", SourceView).vim.leave_visual(self.query_one("#source", SourceView), collapse=False)
         self.query_one("#prompt-row").display = True
-        for selector in ("#file-filter", "#history-filter", "#find-bar"):
+        for selector in ("#file-filter", "#history-filter", "#find-bar", "#command-input"):
             self.query_one(selector).display = selector == target
-        self.query_one("#mode", Static).update("PROMPT")
+        self.set_editor_mode("PROMPT")
         self.query_one("#prompt-label", Static).update({
-            "#file-filter": "files > ", "#history-filter": "filter > ", "#find-bar": "/ ",
+            "#file-filter": "files > ", "#history-filter": "filter > ", "#find-bar": "/ ", "#command-input": ": ",
         }[target])
         field = "#find-input" if target == "#find-bar" else target
         self.query_one(field, Input).focus()
 
     def close_prompt(self) -> None:
         self.query_one("#prompt-row").display = False
-        for selector in ("#file-filter", "#history-filter", "#find-bar"):
+        for selector in ("#file-filter", "#history-filter", "#find-bar", "#command-input"):
             self.query_one(selector).display = False
-        self.query_one("#mode", Static).update("NORMAL")
+        self.set_editor_mode("NORMAL")
 
     @on(TextArea.SelectionChanged, "#source")
     def source_selection_changed(self, event: TextArea.SelectionChanged) -> None:
@@ -933,6 +1009,69 @@ class TrailApp(App):
     def action_find_history(self) -> None:
         self.open_prompt("#history-filter")
 
+    def action_command(self) -> None:
+        self.open_prompt("#command-input")
+        self.query_one("#command-input", Input).value = ""
+
+    @on(Input.Submitted, "#command-input")
+    def command_submitted(self, event: Input.Submitted) -> None:
+        value = event.value.strip().removeprefix(":").strip()
+        name, _, argument = value.partition(" ")
+        name, argument = name.lower(), argument.strip()
+        settings = {"ignorecase": ("#find-case", False), "noignorecase": ("#find-case", True),
+                    "regex": ("#find-regex", True), "noregex": ("#find-regex", False)}
+        actions = {
+            "help": self.action_help, "symbols": self.action_browse_symbols,
+            "sidebar": self.action_toggle_sidebar,
+            "before": lambda: self.set_source_mode("before"),
+            "after": lambda: self.set_source_mode("after"),
+            "starting": lambda: self.set_source_mode("starting"),
+            "diff": lambda: setattr(self.query_one("#review-tabs", TabbedContent), "active", "diff-tab"),
+            "commit": lambda: setattr(self.query_one("#review-tabs", TabbedContent), "active", "commit-tab"),
+        }
+        if name == "set" and argument not in settings:
+            self.status("Settings: ignorecase, noignorecase, regex, noregex", error=True)
+            return
+        if name == "filter":
+            try:
+                HistoryFilter.parse(argument)
+            except TrailError as error:
+                self.status(str(error), error=True)
+                return
+        numeric = name.isascii() and name.isdecimal() and not argument
+        if numeric and len(name) > 9:
+            self.status("Line number is too large.", error=True)
+            return
+        line = int(name) if numeric else None
+        if line is not None and (not self.snapshot or not 1 <= line <= len(self.snapshot.lines)):
+            self.status(f"Enter a line from 1 to {len(self.snapshot.lines) if self.snapshot else 0}.", error=True)
+            return
+        if line is None and name not in (*actions, "q", "quit", "set", "file", "files", "filter"):
+            self.status(f"Unknown command: {value or '(empty)'}. Use :help.", error=True)
+            return
+        if argument and name not in ("file", "files", "filter", "set"):
+            self.status(f":{name} takes no argument.", error=True)
+            return
+        self.close_prompt()
+        self.query_one("#source" if self.snapshot else "#files").focus()
+        if line is not None:
+            self.jump_to(line)
+        elif name in ("q", "quit"):
+            self.exit()
+        elif name == "set":
+            selector, enabled = settings[argument]
+            self.query_one(selector, Checkbox).value = enabled
+            self.status(f"Search: {argument}")
+        elif name in ("file", "files"):
+            self.action_find_file()
+            if argument:
+                self.query_one("#file-filter", Input).value = argument
+        elif name == "filter":
+            self.query_one("#history-filter", Input).value = argument
+            self.query_one("#timeline", OptionList).focus()
+        else:
+            actions[name]()
+
     def action_find_code(self) -> None:
         if self.snapshot is None:
             self.status("Choose a file or source revision first.", error=True)
@@ -1046,6 +1185,7 @@ class TrailApp(App):
 
     def action_help(self) -> None:
         self.close_prompt()
+        self.query_one("#source" if self.snapshot else "#files").focus()
         self.push_screen(HelpScreen())
 
     def action_jump(self) -> None:
@@ -1053,6 +1193,7 @@ class TrailApp(App):
             self.status("Choose a file first.", error=True)
             return
         self.close_prompt()
+        self.query_one("#source", SourceView).focus()
         self.push_screen(JumpScreen(len(self.snapshot.lines)), self.jump_to)
 
     def jump_to(self, line: int | None) -> None:
@@ -1061,6 +1202,9 @@ class TrailApp(App):
             self.query_one("#source", SourceView).focus()
 
     def action_paragraph(self) -> None:
+        if isinstance(self.focused, Input) and self.focused.id in ("file-filter", "history-filter"):
+            self.action_prompt_previous()
+            return
         if self.snapshot is None:
             self.status("Choose a file first.", error=True)
             return
@@ -1085,6 +1229,7 @@ class TrailApp(App):
             self.status("Choose a file first.", error=True)
             return
         self.close_prompt()
+        self.query_one("#source", SourceView).focus()
         try:
             screen = SymbolScreen(self.snapshot)
         except TrailError as error:
