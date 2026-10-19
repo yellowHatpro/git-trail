@@ -9,7 +9,7 @@ Usage: bash script.sh [--prefix DIR] [--ref REF]
        bash script.sh [--prefix DIR] --uninstall
 
   --prefix DIR  Installation prefix (default: ~/.local).
-  --ref REF     GitHub commit, tag, or branch (default: verified v0.6.1 commit).
+  --ref REF     GitHub commit, tag, or branch (default: verified v0.7.0 commit).
   --uninstall   Remove this install and command. Keep user settings.
   --help        Show this help.
 
@@ -334,7 +334,7 @@ cleanup() {
 
 main() {
     local prefix="${HOME:?HOME must be set}/.local"
-    local ref="16e580befdb0ff9d4b757eda214cdc0242de78ba"
+    local ref="103b38317ffe3733a1001ee5afb182f2c635a85e"
     local uninstall=0 ref_given=0 platform uv_path version current_target=""
     local owner="yellowHatpro/git-trail installer v1"
     local source_owner="yellowHatpro/git-trail source v1" immutable_ref=""

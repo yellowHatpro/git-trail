@@ -15,7 +15,7 @@ import pytest
 
 PROJECT = Path(__file__).resolve().parents[1]
 INSTALLER = PROJECT / "script.sh"
-PINNED_REF = "16e580befdb0ff9d4b757eda214cdc0242de78ba"
+PINNED_REF = "103b38317ffe3733a1001ee5afb182f2c635a85e"
 OWNER = "yellowHatpro/git-trail installer v1"
 
 MOCK_TOOL = r'''
