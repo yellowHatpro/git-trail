@@ -32,7 +32,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("repository", nargs="?", default=".", help="Local repository directory (default: current directory)")
     result.add_argument("file", nargs="?", help="Repository-relative file path")
-    result.add_argument("--ref", default="HEAD", help="Starting commit, tag, or branch (default: HEAD)")
+    result.add_argument("--ref", help="Starting commit, tag, or branch (default: HEAD)")
     selection = result.add_mutually_exclusive_group()
     selection.add_argument("--lines", type=line_range, help="Line number or inclusive START:END")
     selection.add_argument("--paragraph", type=int, metavar="LINE", help="Paragraph containing this line")
@@ -42,6 +42,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--symbols", action="store_true", help="List parsed functions and classes and exit")
     result.add_argument("--json", action="store_true", help="Print selection history as JSON and exit")
     result.add_argument("--follow-symbol", action="store_true", help="Follow a complete symbol through refactors (first-parent, conservative)")
+    result.add_argument("--no-resume", action="store_true", help="Open the file picker instead of restoring this repository's last session")
     result.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return result
 
@@ -63,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.follow_symbol and (not args.file or args.symbols):
         argument_parser.error("--follow-symbol requires a file and cannot be combined with --symbols.")
     try:
-        repository = Repository(args.repository, args.ref)
+        repository = Repository(args.repository, args.ref or "HEAD")
         snapshot = repository.snapshot(args.file) if args.file else None
         if args.symbols:
             assert snapshot is not None
@@ -90,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(timeline.to_dict(), ensure_ascii=False, indent=2))
             return 0
         from .app import InitialSelection, TrailApp
-        TrailApp(repository, InitialSelection(snapshot.path if snapshot else None, selected, args.follow_symbol)).run()
+        TrailApp(repository, InitialSelection(snapshot.path if snapshot else None, selected, args.follow_symbol, not args.no_resume and args.ref is None)).run()
         return 0
     except TrailError as error:
         print(f"git-trail: {error}", file=sys.stderr)

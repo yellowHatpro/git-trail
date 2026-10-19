@@ -170,6 +170,25 @@ Settings use a private, atomic `state.json` in `~/.config/git-trail` (or
 Keep it outside inspected repositories. Invalid settings are reported and
 preserved for repair; save failures are shown when exiting.
 
+Use `:bookmark NAME` to save the current source selection and history view,
+`:open NAME` to restore it, and `:unbookmark NAME` to remove it. `:bookmarks`
+opens a searchable picker with Ctrl+N/P and Enter. Names can contain spaces.
+Each repository has its own bookmarks, with a limit of 100.
+
+`:back` / `:forward` or Alt+Left / Alt+Right return to earlier/later visits.
+`Space h b`, `Space h f`, and `Space h m` open Back, Forward, and Bookmarks.
+The current run remembers up to 200 visits. Opening a new view after Back
+replaces forward visits. These shortcuts stay inactive in prompts and dialogs.
+Custom mappings also accept the actions `back`, `forward`, and `bookmarks`.
+
+Bookmarks and the last session keep resolved commit IDs, source paths/ranges,
+tracking mode, selected change, history filter, and Before/After/Starting view.
+They restore the captured revision even after HEAD advances. Opening a repository
+without a file resumes its last session. An explicit file, any explicit `--ref`,
+or `--no-resume` opens the requested starting view instead. Missing objects or
+invalid saved selections show an error and preserve the current view. Git Trail
+does not replace a missing saved revision with HEAD.
+
 ## CLI output
 
 ```sh

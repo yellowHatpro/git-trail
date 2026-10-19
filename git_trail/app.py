@@ -25,6 +25,7 @@ from .git import HistoryEntry, LineRange, Repository, Snapshot, Timeline, TrailE
 from .selectors import enclosing_symbol, paragraph, symbols
 from .theme import BACKGROUND, EDITOR_THEME
 from .state import DEFAULTS, NORMAL_ACTIONS, StateStore, validate_mapping
+from .navigation import NavigationSupport, Visit, bookmark_name
 from .vim import VimCursor
 from .widgets import PaneDivider
 
@@ -221,10 +222,15 @@ class HelpScreen(ModalScreen):
                 "Escape  Normal mode     /  Find     n / N  Matches\n"
                 "Ctrl+W then h j k l  Change pane     Ctrl+W w  Cycle\n"
                 "Space f f / f s / f h  Files / symbols / history\n"
+                "Space h b / h f / h m  Back / forward / bookmarks\n"
                 ":42  Go to line     :help  Guide     :q  Quit\n"
                 ":set ignorecase / noignorecase     :set regex / noregex\n"
                 ":before / :after / :starting     :diff / :commit\n"
                 ":file ext:py     :filter author:Jane     :symbols\n"
+                ":follow  Track a whole symbol through refactors\n"
+                ":bookmark NAME / :open NAME / :unbookmark NAME\n"
+                ":back / :forward / :bookmarks     Alt+Left / Alt+Right\n"
+                ":map KEY ACTION / :unmap KEY / :maps\n"
                 "Ctrl+N/P or Up/Down  Picker results, Enter accepts\n\n"
                 "[bold]Explore[/]\n"
                 "Ctrl+O  Find a file     Ctrl+B  Find a function/class\n"
@@ -259,9 +265,67 @@ class InitialSelection:
     path: str | None = None
     selection: LineRange | None = None
     follow_symbol: bool = False
+    resume: bool = True
 
 
-class TrailApp(App):
+class BookmarkScreen(ModalScreen[str | None]):
+    BINDINGS = SymbolScreen.BINDINGS
+
+    def __init__(self, bookmarks: dict):
+        ModalScreen.__init__(self)
+        self.items = tuple((bookmark_name(name), Visit.from_dict(value)) for name, value in bookmarks.items())
+        self.filtered_items = self.items
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="symbol-dialog"):
+            yield Label("Open a bookmark")
+            yield Input(placeholder="Find a bookmark or file…", id="symbol-filter")
+            yield OptionList(id="symbol-options")
+            yield Static("Ctrl+N/P or ↑/↓ · Enter opens · Escape cancels")
+
+    def on_mount(self) -> None:
+        self.filter_changed(Input.Changed(self.query_one(Input), ""))
+        self.query_one(Input).focus()
+
+    @on(Input.Changed, "#symbol-filter")
+    def filter_changed(self, event: Input.Changed) -> None:
+        query = event.value.casefold()
+        self.filtered_items = tuple(item for item in self.items if query in (item[0] + " " + item[1].path).casefold())
+        options = self.query_one("#symbol-options", OptionList)
+        options.clear_options()
+        options.add_options(
+            Option(Text(f"{name}\n{visit.path}:{visit.start}:{visit.end} · {visit.commit[:10]}"), id=str(index))
+            for index, (name, visit) in enumerate(self.filtered_items)
+        )
+        options.highlighted = 0 if self.filtered_items else None
+
+    @on(Input.Submitted, "#symbol-filter")
+    def filter_submitted(self) -> None:
+        index = self.query_one("#symbol-options", OptionList).highlighted
+        if index is not None:
+            self.dismiss(self.filtered_items[index][0])
+
+    @on(OptionList.OptionSelected)
+    def selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self.filtered_items[event.option_index][0])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def move_result(self, delta: int) -> None:
+        options = self.query_one("#symbol-options", OptionList)
+        if options.option_count:
+            options.highlighted = max(0, min((options.highlighted or 0) + delta, options.option_count - 1))
+            options.scroll_to_highlight()
+
+    def action_next_result(self) -> None:
+        self.move_result(1)
+
+    def action_previous_result(self) -> None:
+        self.move_result(-1)
+
+
+class TrailApp(NavigationSupport, App):
     TITLE = "Git Trail"
     SUB_TITLE = "Source · History · Context"
     ENABLE_COMMAND_PALETTE = False
@@ -331,7 +395,7 @@ class TrailApp(App):
     #mode.prompt { background: #9ece6a; }
     #status { height: 1; width: 1fr; padding: 0 1; color: #a9b1d6; text-wrap: nowrap; text-overflow: ellipsis; }
     #position { width: 14; height: 1; color: #565f89; content-align: right middle; padding: 0 1; }
-    JumpScreen, SymbolScreen, HelpScreen { align: center middle; background: #000000 65%; }
+    JumpScreen, SymbolScreen, BookmarkScreen, HelpScreen { align: center middle; background: #000000 65%; }
     #jump-dialog {
         width: 54; height: auto; padding: 1 2; border: round #3b4261;
         background: #16161e;
@@ -372,6 +436,8 @@ class TrailApp(App):
         Binding("ctrl+s", "symbol", "Containing symbol", show=False, priority=True),
         Binding("ctrl+j", "older", "Older", priority=True),
         Binding("ctrl+k", "newer", "Newer", priority=True),
+        Binding("alt+left", "back", "Previous visit", priority=True),
+        Binding("alt+right", "forward", "Next visit", priority=True),
     ]
 
     def __init__(self, repository: Repository, initial: InitialSelection | None = None, *, store: StateStore | None = None):
@@ -400,6 +466,8 @@ class TrailApp(App):
         self._symbol_cancel = threading.Event()
         self.store = store
         self.preferences = dict(DEFAULTS, keybindings={})
+        self.init_navigation()
+        self._valid_history_filter = ""
 
     def compose(self) -> ComposeResult:
         yield Static(f"Git Trail  /  {self.repository.root.name}  /  {self.repository.commit[:7]}", id="workspace-title")
@@ -462,6 +530,7 @@ class TrailApp(App):
             self.store = StateStore.default()
         state_warning = ""
         if self.store is not None:
+            self.navigation_data = self.store.data
             try:
                 self.store.allow_repository(self.repository.root)
                 self.preferences = self.store.data["preferences"]
@@ -486,6 +555,12 @@ class TrailApp(App):
         self.filter_files("")
         if self.initial.path:
             await self.load_file(self.initial.path, self.initial.selection)
+        elif self.initial.resume and self.repository_key in self.navigation_data["sessions"]:
+            try:
+                visit = Visit.from_dict(self.navigation_data["sessions"][self.repository_key])
+                await self.restore_visit(visit)
+            except TrailError as error:
+                self.status(str(error), error=True)
         else:
             self.status(
                 "Choose a file. All source and selections use the starting commit, HEAD by default."
@@ -504,6 +579,9 @@ class TrailApp(App):
                     if fields:
                         self.preferences[key] = fields[0].value
                 self.store.data["preferences"] = self.preferences
+                visit = self.current_visit()
+                if visit is not None:
+                    self.navigation_data["sessions"][self.repository_key] = visit.to_dict()
                 self.store.save()
             except TrailError as error:
                 message = Text(str(error), style="#f7768e")
@@ -526,7 +604,7 @@ class TrailApp(App):
             self.set_editor_mode("NORMAL")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "window_prefix":
+        if action in ("window_prefix", "back", "forward"):
             return not isinstance(self.focused, Input) and not isinstance(self.screen, ModalScreen)
         if action in ("prompt_next", "prompt_previous"):
             return isinstance(self.focused, Input) and self.focused.id in ("file-filter", "history-filter") and not isinstance(self.screen, ModalScreen)
@@ -589,12 +667,17 @@ class TrailApp(App):
         elif self._normal_prefix == "window":
             self._normal_prefix = ""
             self.focus_window(key)
-        elif self._normal_prefix in ("leader", "leader-find"):
+        elif self._normal_prefix in ("leader", "leader-find", "leader-history"):
             prefix = self._normal_prefix
             self._normal_prefix = ""
             if prefix == "leader" and key == "f":
                 self._normal_prefix = "leader-find"
                 self.status("Space f  f: files · s: symbols · h: history")
+            elif prefix == "leader" and key == "h":
+                self._normal_prefix = "leader-history"
+                self.status("Space h  b: back · f: forward · m: bookmarks")
+            elif prefix == "leader-history" and key in ("b", "f", "m"):
+                {"b": self.action_back, "f": self.action_forward, "m": self.action_bookmarks}[key]()
             elif prefix == "leader-find" and key in ("f", "s", "h"):
                 {"f": self.action_find_file, "s": self.action_browse_symbols, "h": self.action_find_history}[key]()
             else:
@@ -603,7 +686,7 @@ class TrailApp(App):
             source = self.query_one("#source", SourceView)
             source.vim.leave_visual(source, collapse=False)
             self._normal_prefix = "leader"
-            self.status("Space  f: find files, symbols, or history · Escape cancels")
+            self.status("Space  f: find · h: visits and bookmarks · Escape cancels")
         elif key == ":":
             self.action_command()
         elif key == "/":
@@ -716,6 +799,8 @@ class TrailApp(App):
         self.run_worker(self.load_file(path), group="file", exclusive=True, exit_on_error=False)
 
     async def load_file(self, path: str, selection: LineRange | None = None) -> None:
+        self.record_visit()
+        self.begin_navigation()
         self._symbol_cancel.set()
         self.close_prompt()
         self._load_generation += 1
@@ -760,6 +845,9 @@ class TrailApp(App):
             await self.trace_selection(selection, follow=self.initial.follow_symbol)
         elif self.initial.follow_symbol:
             self.action_follow()
+        else:
+            self._navigation_ready = True
+            self.record_visit()
 
     def selected_range(self) -> LineRange:
         if self.snapshot is None:
@@ -807,6 +895,8 @@ class TrailApp(App):
     async def trace_selection(self, selection: LineRange, *, follow: bool = False) -> None:
         if self.snapshot is None:
             return
+        self.record_visit()
+        self.begin_navigation()
         snapshot = self.snapshot
         repository = self.snapshot_repository
         self._symbol_cancel.set()
@@ -863,11 +953,13 @@ class TrailApp(App):
                 self.query_one("#source-note", Static).add_class("important")
                 self.query_one("#diff", Static).update(Text(note))
                 self.status(timeline.warnings[-1], error=True)
+                self._navigation_ready = True
+                self.record_visit()
 
     def on_unmount(self) -> None:
         self._symbol_cancel.set()
 
-    def apply_history_filter(self) -> None:
+    def apply_history_filter(self, *, load_view: bool = True) -> None:
         if self.timeline is None:
             return
         try:
@@ -875,6 +967,10 @@ class TrailApp(App):
         except TrailError as error:
             self.status(str(error), error=True)
             return
+        if load_view:
+            self.record_visit()
+            self._navigation_ready = False
+        self._valid_history_filter = self.query_one("#history-filter", Input).value
         selected_sha = self.selected_entry.commit if self.selected_entry else ""
         self.filtered_entries = tuple(entry for entry in self.timeline.entries if predicate.matches(entry))
         self._view_generation += 1
@@ -898,7 +994,10 @@ class TrailApp(App):
             index = next((index for index, entry in enumerate(self.filtered_entries) if entry.commit == selected_sha), 0)
             options.highlighted = index
             self._rendering_timeline = False
-            self.show_entry(index)
+            if load_view:
+                self.show_entry(index)
+            else:
+                self.selected_entry = self.filtered_entries[index]
         else:
             options.highlighted = None
             self._rendering_timeline = False
@@ -911,9 +1010,15 @@ class TrailApp(App):
             self.query_one("#source-title", Static).update("SOURCE · no matching changes")
             self.query_one("#source-note", Static).update("Clear the history filter to return to this timeline.")
             self.refresh_search()
+            self._navigation_ready = True
+            self.record_visit()
 
     @on(Input.Changed, "#history-filter")
     def history_filter_changed(self) -> None:
+        if self._restoring:
+            ready = self._restore_previous_ready
+            self.begin_navigation()
+            self._navigation_ready = ready
         self.apply_history_filter()
 
     @on(Input.Submitted, "#history-filter")
@@ -932,6 +1037,8 @@ class TrailApp(App):
     def show_entry(self, index: int) -> None:
         if self.timeline is None or not 0 <= index < len(self.filtered_entries):
             return
+        self.record_visit()
+        self.begin_navigation()
         entry = self.filtered_entries[index]
         self.selected_entry = entry
         self.query_one("#diff-title", Static).update(
@@ -953,17 +1060,20 @@ class TrailApp(App):
             group="view", exclusive=True, exit_on_error=False,
         )
 
-    async def load_entry(self, entry: HistoryEntry, generation: int, mode: str) -> None:
+    async def load_entry(self, entry: HistoryEntry, generation: int, mode: str, *, prepared=None) -> None:
         try:
-            if mode == "starting":
-                snapshot = self.traced_snapshot
-                selection = self.timeline.selection if self.timeline else None
-                note = "Starting source for this timeline"
+            if prepared is not None:
+                snapshot, selection, note, details, repository = prepared
             else:
-                view = await asyncio.to_thread(self.repository.historical_source, entry, mode == "before")
-                snapshot, selection, note = view.snapshot, view.selection, view.note
-            details = await asyncio.to_thread(self.repository.details, entry.commit)
-            repository = await asyncio.to_thread(self.repository.at, snapshot.commit) if snapshot else self.repository
+                if mode == "starting":
+                    snapshot = self.traced_snapshot
+                    selection = self.timeline.selection if self.timeline else None
+                    note = "Starting source for this timeline"
+                else:
+                    view = await asyncio.to_thread(self.repository.historical_source, entry, mode == "before")
+                    snapshot, selection, note = view.snapshot, view.selection, view.note
+                details = await asyncio.to_thread(self.repository.details, entry.commit)
+                repository = await asyncio.to_thread(self.repository.at, snapshot.commit) if snapshot else self.repository
         except TrailError as error:
             if generation == self._view_generation:
                 self.snapshot = None
@@ -1015,6 +1125,8 @@ class TrailApp(App):
         )
         if self.timeline and self.timeline.mode == "symbol" and partial:
             self.status(partial[-1], error=True)
+        self._navigation_ready = True
+        self.record_visit()
 
     def navigate(self, offset: int) -> None:
         options = self.query_one("#timeline", OptionList)
@@ -1075,6 +1187,9 @@ class TrailApp(App):
         if self.selected_entry is None and mode != "after":
             self.status("Trace a selection before choosing a historical source view.")
             return
+        self.record_visit()
+        if self.selected_entry is not None:
+            self._navigation_ready = False
         self.source_mode = mode
         for value in ("after", "before", "starting"):
             self.query_one(f"#view-{value}", Button).set_class(value == mode, "active")
@@ -1106,6 +1221,15 @@ class TrailApp(App):
         value = event.value.strip().removeprefix(":").strip()
         name, _, argument = value.partition(" ")
         name, argument = name.lower(), argument.strip()
+        if name in ("bookmark", "open", "unbookmark"):
+            try:
+                {"bookmark": self.save_bookmark, "open": self.open_bookmark, "unbookmark": self.delete_bookmark}[name](argument)
+            except TrailError as error:
+                self.status(str(error), error=True)
+                return
+            self.close_prompt()
+            self.query_one("#source").focus()
+            return
         if name in ("map", "unmap"):
             try:
                 parts = argument.split()
@@ -1131,6 +1255,8 @@ class TrailApp(App):
             "help": self.action_help, "symbols": self.action_browse_symbols,
             "maps": self.action_help,
             "follow": self.action_follow,
+            "back": self.action_back, "forward": self.action_forward,
+            "bookmarks": self.action_bookmarks,
             "sidebar": self.action_toggle_sidebar,
             "before": lambda: self.set_source_mode("before"),
             "after": lambda: self.set_source_mode("after"),
@@ -1180,6 +1306,25 @@ class TrailApp(App):
             self.query_one("#timeline", OptionList).focus()
         else:
             actions[name]()
+
+    def action_bookmarks(self) -> None:
+        try:
+            items = self.saved_bookmarks()
+            if not items:
+                raise TrailError("No bookmarks yet. Use :bookmark NAME.")
+            screen = BookmarkScreen(items)
+        except TrailError as error:
+            self.status(str(error), error=True)
+            return
+
+        def selected(name: str | None) -> None:
+            if name:
+                try:
+                    self.open_bookmark(name)
+                except TrailError as error:
+                    self.status(str(error), error=True)
+
+        self.push_screen(screen, selected)
 
     def action_find_code(self) -> None:
         if self.snapshot is None:

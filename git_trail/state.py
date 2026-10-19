@@ -15,6 +15,7 @@ NORMAL_ACTIONS = {
     "files": "find_file", "find": "find_code", "symbols": "browse_symbols",
     "filter": "find_history", "follow": "follow", "help": "help",
     "sidebar": "toggle_sidebar",
+    "back": "back", "forward": "forward", "bookmarks": "bookmarks",
 }
 RESERVED_KEYS = set("hjklwbvVgGnNq?/ :$0123456789")
 MAX_STATE_BYTES = 1_000_000
