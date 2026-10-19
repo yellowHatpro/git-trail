@@ -91,6 +91,27 @@ class DiffPatch:
             hunks.append(DiffHunk(header, changed, index, valid))
         return cls(tuple(lines), tuple(hunks))
 
+    def change_targets(self) -> tuple[int, ...]:
+        targets = []
+        for hunk in self.hunks:
+            if not hunk.valid:
+                continue
+            edits = []
+            inside = False
+            for index in range(hunk.header + 1, hunk.end):
+                kind = self.lines[index].kind
+                if kind in ("delete", "add"):
+                    if not inside:
+                        edits.append(index)
+                    inside = True
+                elif kind != "marker":
+                    inside = False
+            if not edits:
+                edits = [index for index in range(hunk.header + 1, hunk.end)
+                         if self.lines[index].kind == "context"][:1]
+            targets.extend(edits)
+        return tuple(targets)
+
     def split_rows(self) -> tuple[SplitRow, ...]:
         rows = []
         removed, added, markers = [], [], []

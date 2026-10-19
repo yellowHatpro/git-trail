@@ -273,6 +273,25 @@ class Repository:
         note = "Before view uses the first parent of this merge." if before and len(entry.parents) > 1 else ""
         return HistoryView(snapshot, selection, note)
 
+    def diff_source(self, entry: HistoryEntry, line: int, before: bool = False) -> HistoryView:
+        if before and not entry.parents:
+            raise TrailError("This is the first commit. No earlier source exists.")
+        path = entry.old_path if before else entry.new_path
+        if not path:
+            raise TrailError("The file does not exist on this side of the change.")
+        commit = entry.parents[0] if before else entry.commit
+        self.validate_commit(commit)
+        path = self.path(path)
+        self._git("cat-file", "-e", f"{commit}^{{commit}}")
+        self._git("cat-file", "-e", f"{commit}:{path}")
+        snapshot = Snapshot(path, commit, self.revision_text(path, commit), False)
+        selection = LineRange(line, line, "diff line")
+        selection.validate(len(snapshot.lines))
+        note = f"{'Before' if before else 'After'} · {path}:{line} · {commit[:10]}"
+        if before and len(entry.parents) > 1:
+            note += " · first parent"
+        return HistoryView(snapshot, selection, note)
+
     @lru_cache(maxsize=32)
     def history(self, snapshot: Snapshot, selection: LineRange) -> Timeline:
         if snapshot.commit != self.commit or snapshot.path != self.path(snapshot.path):
