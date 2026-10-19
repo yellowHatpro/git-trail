@@ -9,6 +9,7 @@ Follow whole symbols through refactors, bookmark exact revisions, and resume
 your last session with saved layout, search options, and custom normal-mode keys.
 Compare changes side by side and jump from a diff row to its exact historical source.
 Explore committed folders and choose Catppuccin or Gruvbox colors.
+Choose a merge parent and inspect its full-file contribution, including merge resolutions.
 
 ![Git Trail with its folder explorer, source timeline, and diff in Catppuccin Mocha](docs/images/git-trail-explorer.png)
 
@@ -48,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.
 This installs `"$HOME/tools/bin/git-trail"`. Keep the same prefix when updating.
 The installer prints the matching PATH command.
 
-The default source is the verified v0.6.1 commit. To follow the current `main`
+The default source is the verified v0.7.0 commit. To follow the current `main`
 branch instead of the verified release:
 
 ```sh
@@ -130,7 +131,7 @@ Ctrl+Shift+Left/Right. F2 hides or shows the sidebar. Terminal resizing keeps th
 source and history usable.
 
 The source pane follows the selected change. **After** shows its committed source;
-**Before** shows its first parent's source. The tracked lines are selected at their
+ordinary **Before** shows its first parent's source. The tracked lines are selected at their
 historical coordinates. **Starting** returns to the source from which you traced
 this timeline. Press F4 to cycle views. A file or selection that did not exist on
 one side is labeled explicitly.
@@ -150,13 +151,52 @@ In the diff pane, `]c` / `[c` move between edit blocks, including separate edits
 inside one large function hunk. F6 / Shift+F6 also work from other normal panes.
 Use j / k, arrows, or gg / G to select a row; h / l scroll horizontally.
 Click either column in a split diff to select that side. Enter opens the exact
-historical filename and line: removed lines use the first parent, added lines
+historical filename and line: removed lines use the first parent, or your chosen
+parent during explicit merge review; added lines
 use the selected commit. Context lines support either side.
 `:diffsource` opens the selected side; `:diffbefore` / `:diffafter` choose a side
 explicitly. Headers, newline markers, and empty split cells have no source line.
 Missing Git objects report an error and keep the current view.
 
 ![Git Trail comparing changes side by side](docs/images/git-trail-split.png)
+
+## Review merge parents
+
+Use F7 or `:merges` to find reachable merges, even when the range timeline omits
+them or your starting commit is not a merge. The searchable picker lists up to
+100 recent merges and reports when discovery is limited.
+
+Use F8, the **Parents** button, or `:parents` to choose a parent of the active
+comparison, selected merge, or starting merge. The picker shows the actual
+ordered parent SHAs, including third and later parents and unavailable objects.
+You can also enter:
+
+```text
+:parent 2
+:nextparent
+:prevparent
+```
+
+`:parent` accepts a one-based number or an exact parent SHA. **Before** now shows
+that parent's file; **After** shows the merge's file. The diff compares the entire
+file between those two commits and includes merge resolutions. Its heading and
+status identify the parent and say **FULL-FILE**. Diff-row source jumps use the
+chosen parent for removed lines and the merge for added lines.
+
+Parent review keeps the original selection timeline and its count intact.
+**Starting** leaves the comparison and returns to its captured starting view.
+Back/Forward, bookmarks, and session restoration retain the exact chosen parent,
+including when different parents have identical After code. Tracing a selection
+in Before starts ordinary history from that displayed parent's committed source.
+The Commit tab labels its changed-file union **ALL PARENTS**.
+
+An unchanged file has an empty diff. Absent, empty, and unreadable source are
+identified separately. Missing objects and ambiguous renames report errors
+without replacing the current view. Explicit comparisons use stored commit
+objects, bypassing Git replacement refs; history retraced from them keeps that
+same object context. This is pairwise full-file review, not complete semantic
+selection tracking through every merge parent. Ordinary history and CLI JSON
+keep their existing behavior.
 
 Git Trail uses a read-only subset of Vim navigation. It does not run Neovim or
 load Neovim plugins. Source starts in **NORMAL** mode; typing cannot edit files.
@@ -202,6 +242,7 @@ The existing shortcuts also work:
 | Ctrl+D | Switch between diff and commit context |
 | F4 | Cycle After, Before, and Starting source views |
 | F6 / Shift+F6 in normal mode | Next / previous diff edit block |
+| F7 / F8 in normal mode | Find reachable merges / choose a merge parent |
 | Ctrl+Y | Copy the selected commit SHA through the terminal clipboard |
 | Ctrl+Shift+Left / Right | Narrow / widen the sidebar |
 | F2 | Hide / show the sidebar |
@@ -299,6 +340,7 @@ Layout width/visibility and search case/regex settings are saved on exit. Use
 `:map x symbols` to assign an unused printable normal-mode key, `:unmap x`
 to remove it, and `:maps` to see mappings. Built-in Vim keys remain reserved.
 Diff actions `nextchange`, `prevchange`, and `diffsource` can also be mapped.
+Merge actions `merges`, `parents`, `nextparent`, and `prevparent` can be mapped.
 Mappings are inactive in prompts, dialogs, and visual selections.
 
 Settings use a private, atomic `state.json` in `~/.config/git-trail` (or
@@ -321,6 +363,7 @@ Custom mappings also accept the actions `back`, `forward`, and `bookmarks`.
 
 Bookmarks and the last session keep resolved commit IDs, source paths/ranges,
 tracking mode, selected change, history filter, and Before/After/Starting view.
+Explicit merge reviews also keep their merge, file path, and chosen parent.
 They restore the captured revision even after HEAD advances. Opening a repository
 without a file resumes its last session. An explicit file, any explicit `--ref`,
 or `--no-resume` opens the requested starting view instead. Missing objects or
@@ -411,6 +454,9 @@ async results, conservative refactor matches, atomic settings, exact bookmark
 and session restoration, and unchanged repository files and index.
 Diff coverage includes split alignment, exact source coordinates, pruned objects,
 mouse selection, Vim navigation, and interrupted source jumps.
+Merge coverage includes canonical parent order, octopus merges, exact pairwise
+patches and source, shallow clones, replacement refs, absent and ambiguous files,
+saved parent identity, real command prompts, and stale parent/picker/jump requests.
 Explorer coverage includes deep and Unicode filenames, folder navigation,
 search/tree transitions, committed path identity, and narrow pane rendering.
 Theme coverage checks rendered colors, picker controls, persistence, independent
