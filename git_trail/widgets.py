@@ -3,6 +3,13 @@ from __future__ import annotations
 from textual import events
 from textual.binding import Binding
 from textual.widget import Widget
+from textual.containers import VerticalScroll
+
+
+class DiffScroll(VerticalScroll):
+    def on_resize(self) -> None:
+        if self.app.is_mounted:
+            self.app.call_after_refresh(self.app.render_diff)
 
 
 class PaneDivider(Widget, can_focus=True):

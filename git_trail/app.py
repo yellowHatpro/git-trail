@@ -26,8 +26,9 @@ from .selectors import enclosing_symbol, paragraph, symbols
 from .theme import BACKGROUND, EDITOR_THEME
 from .state import DEFAULTS, NORMAL_ACTIONS, StateStore, validate_mapping
 from .navigation import NavigationSupport, Visit, bookmark_name
+from .diff import DiffPatch, SplitRow
 from .vim import VimCursor
-from .widgets import PaneDivider
+from .widgets import DiffScroll, PaneDivider
 
 
 class DiffStyle(PygmentsStyle):
@@ -378,6 +379,9 @@ class TrailApp(NavigationSupport, App):
     #timeline-pane { width: 34%; min-width: 22; background: #1a1b26; border-right: solid #292e42; }
     #timeline { height: 1fr; min-height: 0; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: #1a1b26; padding: 0 1; }
     #diff-pane { width: 1fr; }
+    #diff-heading { height: 1; background: #24283b; }
+    #diff-title { width: 1fr; }
+    #diff-layout { height: 1; width: 11; min-width: 11; border: none; padding: 0 1; background: #24283b; color: #7aa2f7; }
     #review-tabs { height: 1fr; background: #1a1b26; }
     TabPane { padding: 0; }
     ContentSwitcher { height: 1fr; }
@@ -468,6 +472,14 @@ class TrailApp(NavigationSupport, App):
         self.preferences = dict(DEFAULTS, keybindings={})
         self.init_navigation()
         self._valid_history_filter = ""
+        self.diff_layout = "unified"
+        self.diff_effective_layout = "unified"
+        self._diff_key = None
+        self._diff_patch = DiffPatch.parse("")
+        self._diff_rows: tuple[SplitRow, ...] = ()
+        self._diff_cursor: int | None = None
+        self._diff_active = False
+        self._diff_separator = 0
 
     def compose(self) -> ComposeResult:
         yield Static(f"Git Trail  /  {self.repository.root.name}  /  {self.repository.commit[:7]}", id="workspace-title")
@@ -496,8 +508,10 @@ class TrailApp(NavigationSupport, App):
                     with Vertical(id="diff-pane"):
                         with TabbedContent(id="review-tabs"):
                             with TabPane("Diff", id="diff-tab"):
-                                yield Static("SELECTED-RANGE DIFF", id="diff-title")
-                                with VerticalScroll(id="diff-scroll"):
+                                with Horizontal(id="diff-heading"):
+                                    yield Static("SELECTED-RANGE DIFF", id="diff-title")
+                                    yield Button("Unified", id="diff-layout", compact=True, tooltip="Toggle unified or side-by-side diff (:split / :unified)")
+                                with DiffScroll(id="diff-scroll"):
                                     yield Static(
                                         "Choose a file, select lines, and press Enter.\n\n"
                                         "Ctrl+B finds functions and classes.\n"
@@ -544,6 +558,7 @@ class TrailApp(NavigationSupport, App):
         self.query_one("#find-case", Checkbox).value = self.preferences["find_case"]
         self.query_one("#find-regex", Checkbox).value = self.preferences["find_regex"]
         self.close_prompt()
+        self.query_one("#diff-layout", Button).active_effect_duration = 0
         self.resize_sidebar(self.sidebar_width)
         self.screen.set_class(self.size.width < 100 or self.size.height < 30, "compact")
         self.sub_title = f"{self.repository.root.name} · {self.repository.commit[:10]}"
@@ -1170,14 +1185,53 @@ class TrailApp(NavigationSupport, App):
     def render_diff(self) -> None:
         if self.selected_entry is None:
             return
+        key = self.selected_entry.commit, self.selected_entry.patch
+        if key != self._diff_key:
+            self._diff_key = key
+            self._diff_patch = DiffPatch.parse(self.selected_entry.patch)
+            self._diff_cursor = self._diff_patch.hunks[0].changed if self._diff_patch.hunks else None
+            self._diff_active = False
+        pane = self.query_one("#diff-scroll", VerticalScroll)
+        width = pane.scrollable_content_region.width
+        old_layout = self.diff_effective_layout
+        self.diff_effective_layout = "split" if self.diff_layout == "split" and width >= 60 else "unified"
+        button = self.query_one("#diff-layout", Button)
+        button.label = "Split" if self.diff_effective_layout == "split" else "Unified"
+        button.tooltip = "Side-by-side needs 60 columns in the diff pane. Unified fallback is active." if self.diff_layout != self.diff_effective_layout else "Toggle unified or side-by-side diff (:split / :unified)"
+        if old_layout != self.diff_effective_layout and self.diff_layout == "split":
+            self.status("Side-by-side diff" if self.diff_effective_layout == "split" else "Unified diff (side-by-side needs 60 diff columns)")
+        active = self._diff_cursor if self._diff_active else None
+        if self.diff_effective_layout == "split":
+            rendered, rows, self._diff_separator = self._diff_patch.side_by_side(
+                self.selected_entry.old_path, self.selected_entry.new_path, width, active,
+                compact=self.screen.has_class("compact"),
+            )
+            self._diff_rows = (SplitRow(), *rows)
+            self.query_one("#diff", Static).update(rendered)
+            return
         patch = display_source(self.selected_entry.patch)
+        offset = 0
         if self.screen.has_class("compact"):
-            offset = patch.find("\n@@ ")
-            if offset >= 0:
-                patch = patch[offset + 1:]
+            if self._diff_patch.hunks:
+                offset = self._diff_patch.hunks[0].header
+                patch = "\n".join(patch.split("\n")[offset:])
+        self._diff_rows = tuple(SplitRow(heading=index) for index in range(offset, len(self._diff_patch.lines)))
         self.query_one("#diff", Static).update(
-            Syntax(patch, "diff", theme=DIFF_THEME, word_wrap=False, background_color=BACKGROUND)
+            Syntax(patch, "diff", theme=DIFF_THEME, word_wrap=False, background_color=BACKGROUND,
+                   highlight_lines={active - offset + 1} if active is not None and active >= offset else None)
         )
+
+    def set_diff_layout(self, layout: str) -> None:
+        self.diff_layout = layout
+        self.query_one("#review-tabs", TabbedContent).active = "diff-tab"
+        self.render_diff()
+        self.query_one("#diff-scroll", VerticalScroll).focus()
+        self.status("Side-by-side diff" if self.diff_effective_layout == "split" else
+                    ("Unified diff (side-by-side needs 60 diff columns)" if layout == "split" else "Unified diff"))
+
+    @on(Button.Pressed, "#diff-layout")
+    def diff_layout_pressed(self) -> None:
+        self.set_diff_layout("unified" if self.diff_layout == "split" else "split")
 
     @on(Button.Pressed, "#view-after, #view-before, #view-starting")
     def source_view_pressed(self, event: Button.Pressed) -> None:
@@ -1262,6 +1316,8 @@ class TrailApp(NavigationSupport, App):
             "after": lambda: self.set_source_mode("after"),
             "starting": lambda: self.set_source_mode("starting"),
             "diff": lambda: setattr(self.query_one("#review-tabs", TabbedContent), "active", "diff-tab"),
+            "split": lambda: self.set_diff_layout("split"),
+            "unified": lambda: self.set_diff_layout("unified"),
             "commit": lambda: setattr(self.query_one("#review-tabs", TabbedContent), "active", "commit-tab"),
         }
         if name == "set" and argument not in settings:

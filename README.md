@@ -63,6 +63,10 @@ files. Ctrl+D switches between the diff and commit context. Tracing a selection 
 historical source starts a new timeline from that displayed revision.
 In compact terminals, the diff opens at the first changed hunk. Wider views
 include the Git metadata. The original patch remains available in CLI output.
+Click **Unified** or use `:split` to compare before and after in two columns.
+The split view shows historical line numbers and keeps long lines scrollable.
+It falls back to unified when the diff pane has fewer than 60 columns.
+Use `:unified` to return to the default layout.
 
 Git Trail uses a read-only subset of Vim navigation. It does not run Neovim or
 load Neovim plugins. Source starts in **NORMAL** mode; typing cannot edit files.
