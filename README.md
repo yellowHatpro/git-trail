@@ -8,8 +8,9 @@ Search code, filter history, and read the full commit context without leaving yo
 Follow whole symbols through refactors, bookmark exact revisions, and resume
 your last session with saved layout, search options, and custom normal-mode keys.
 Compare changes side by side and jump from a diff row to its exact historical source.
+Explore committed folders and choose Catppuccin or Gruvbox colors.
 
-![Git Trail showing source, its commit timeline, and a selected-range diff](docs/images/git-trail.svg)
+![Git Trail with its folder explorer, source timeline, and diff in Catppuccin Mocha](docs/images/git-trail-explorer.png)
 
 ## Install the command
 
@@ -37,7 +38,7 @@ Choose another installation directory with `bash script.sh --prefix /your/path`.
 For example, `--prefix "$HOME/tools"` installs `"$HOME/tools/bin/git-trail"`.
 The installer prints the matching PATH command.
 
-The default source is the verified v0.5.0 commit. Download the latest installer
+The default source is the verified v0.6.0 commit. Download the latest installer
 again when upgrading, or select a published commit, tag, or branch explicitly:
 
 ```sh
@@ -92,12 +93,18 @@ With no arguments, the current directory is the repository.
 
 ## In the terminal
 
-The interface uses an editor layout: slim pane headers, a shared dark palette,
+The interface uses an editor layout: slim pane headers, a shared color palette,
 and a single statusline. Searches and filters open a borderless, one-row prompt
 at the bottom. Escape closes it and returns to the pane you were using.
 
-The scrollable sidebar searches files at your starting commit. Drag its right edge
-to adjust its width, focus the divider and use Left/Right, or press
+The sidebar is a collapsible explorer of files at your starting commit. It shows
+filenames inside folders and compresses single-child directory chains. Narrow
+rows keep the filename extension visible; `:path` opens the full selected path.
+With the explorer focused, use `j` / `k` to move, `l` to expand, and `h` to
+collapse or move to the parent. Enter or a click toggles folders or opens a file.
+Ctrl+O opens filename-first search with directory context; Escape returns to the tree.
+
+Drag the sidebar's right edge to adjust its width, focus the divider and use Left/Right, or press
 Ctrl+Shift+Left/Right. F2 hides or shows the sidebar. Terminal resizing keeps the
 source and history usable.
 
@@ -165,6 +172,9 @@ The existing shortcuts also work:
 | Key | Action |
 | --- | --- |
 | Ctrl+O | Focus file search; type a filter and press Enter to open |
+| h / l in the explorer | Collapse / parent, or expand a folder |
+| :path | Inspect the full selected file or folder path |
+| :theme | Open the theme picker |
 | Ctrl+F | Find text or a function name in displayed code |
 | F3 / Shift+F3 | Next / previous code match, wrapping at the ends |
 | Ctrl+L | Focus the history filter |
@@ -230,8 +240,39 @@ change. Invalid filters show an explanation and preserve the last valid results.
 The `:` prompt also accepts `help`, `q`, a line number such as `42`, `files`,
 `file src ext:py`, `symbols`, `filter author:Jane`, `after`, `before`, `starting`,
 `diff`, `commit`, `sidebar`, `split`, `unified`, `nextchange`, `prevchange`,
-`diffsource`, `diffbefore`, and `diffafter`. `:filter` clears the history filter. Commands
+`diffsource`, `diffbefore`, `diffafter`, `path`, and `theme`. `:filter` clears the history filter. Commands
 only change the view; Git Trail keeps the repository read-only.
+
+## Themes
+
+Use `:theme` to open a searchable picker, or apply a theme directly:
+
+```text
+:theme mocha
+:theme gruvbox-light
+```
+
+| Theme | Command name |
+| --- | --- |
+| Tokyo Night (default) | `tokyo-night` |
+| Catppuccin Latte | `catppuccin-latte` |
+| Catppuccin Frappé | `catppuccin-frappe` |
+| Catppuccin Macchiato | `catppuccin-macchiato` |
+| Catppuccin Mocha | `catppuccin-mocha` |
+| Gruvbox Dark | `gruvbox-dark` |
+| Gruvbox Light | `gruvbox-light` |
+
+Short names `latte`, `frappe`, `macchiato`, `mocha`, and `gruvbox` also work.
+Ctrl+N/P or Up/Down moves through the picker; Enter or a click applies the theme.
+Escape cancels. Themes color the explorer, source syntax, diffs, prompts,
+dialogs, and statusline while preserving the current selection and history.
+The choice is saved on exit and restored next time.
+
+![All four Catppuccin flavors and both Gruvbox themes in Git Trail](docs/images/git-trail-themes.png)
+
+Colors follow the official Catppuccin palette and Gruvbox color definitions.
+
+## Saved settings and views
 
 Layout width/visibility and search case/regex settings are saved on exit. Use
 `:map x symbols` to assign an unused printable normal-mode key, `:unmap x`
@@ -349,3 +390,7 @@ async results, conservative refactor matches, atomic settings, exact bookmark
 and session restoration, and unchanged repository files and index.
 Diff coverage includes split alignment, exact source coordinates, pruned objects,
 mouse selection, Vim navigation, and interrupted source jumps.
+Explorer coverage includes deep and Unicode filenames, folder navigation,
+search/tree transitions, committed path identity, and narrow pane rendering.
+Theme coverage checks rendered colors, picker controls, persistence, independent
+app instances, and unchanged source/search/diff state across all seven palettes.
