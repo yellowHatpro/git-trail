@@ -24,6 +24,7 @@ from .filters import HistoryFilter, filter_files, find_matches
 from .git import HistoryEntry, LineRange, Repository, Snapshot, Timeline, TrailError, display_source
 from .selectors import enclosing_symbol, paragraph, symbols
 from .theme import BACKGROUND, EDITOR_THEME
+from .state import DEFAULTS, NORMAL_ACTIONS, StateStore, validate_mapping
 from .vim import VimCursor
 from .widgets import PaneDivider
 
@@ -203,8 +204,14 @@ class SymbolScreen(ModalScreen[LineRange | None]):
 class HelpScreen(ModalScreen):
     BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("f1", "dismiss", "Close")]
 
+    def __init__(self, mappings: dict | None = None):
+        super().__init__()
+        self.mappings = mappings or {}
+
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="help-dialog"):
+            if self.mappings:
+                yield Static(Text("CUSTOM NORMAL KEYS\n" + "\n".join(f"{key}  {action}" for key, action in self.mappings.items()) + "\n"))
             yield Static(Text.from_markup(
                 "[bold #a5b4fc]GIT TRAIL  /  KEYBOARD & FILTERS[/]\n\n"
                 "[bold]Normal / Visual[/]\n"
@@ -367,7 +374,7 @@ class TrailApp(App):
         Binding("ctrl+k", "newer", "Newer", priority=True),
     ]
 
-    def __init__(self, repository: Repository, initial: InitialSelection | None = None):
+    def __init__(self, repository: Repository, initial: InitialSelection | None = None, *, store: StateStore | None = None):
         super().__init__()
         self.repository = repository
         self.initial = initial or InitialSelection()
@@ -391,6 +398,8 @@ class TrailApp(App):
         self._prompt_origin = None
         self._normal_prefix = ""
         self._symbol_cancel = threading.Event()
+        self.store = store
+        self.preferences = dict(DEFAULTS, keybindings={})
 
     def compose(self) -> ComposeResult:
         yield Static(f"Git Trail  /  {self.repository.root.name}  /  {self.repository.commit[:7]}", id="workspace-title")
@@ -449,6 +458,22 @@ class TrailApp(App):
             yield Static("", id="position")
 
     async def on_mount(self) -> None:
+        if self.store is None and not self.is_headless:
+            self.store = StateStore.default()
+        state_warning = ""
+        if self.store is not None:
+            try:
+                self.store.allow_repository(self.repository.root)
+                self.preferences = self.store.data["preferences"]
+            except TrailError as error:
+                state_warning = str(error)
+            state_warning = state_warning or self.store.warning
+        self.sidebar_width = self.preferences["sidebar_width"]
+        self._sidebar_visible = self.preferences["sidebar_visible"]
+        self.query_one("#files-pane").display = self._sidebar_visible
+        self.query_one("#sidebar-divider").display = self._sidebar_visible
+        self.query_one("#find-case", Checkbox).value = self.preferences["find_case"]
+        self.query_one("#find-regex", Checkbox).value = self.preferences["find_regex"]
         self.close_prompt()
         self.resize_sidebar(self.sidebar_width)
         self.screen.set_class(self.size.width < 100 or self.size.height < 30, "compact")
@@ -466,6 +491,23 @@ class TrailApp(App):
                 "Choose a file. All source and selections use the starting commit, HEAD by default."
             )
             self.action_find_file()
+        if state_warning:
+            self.status(state_warning, error=True)
+            self.notify(state_warning, severity="warning")
+
+    def exit(self, result=None, return_code: int = 0, message=None) -> None:
+        self._symbol_cancel.set()
+        if self.store is not None:
+            try:
+                for selector, key in (("#find-case", "find_case"), ("#find-regex", "find_regex")):
+                    fields = list(self.query(selector))
+                    if fields:
+                        self.preferences[key] = fields[0].value
+                self.store.data["preferences"] = self.preferences
+                self.store.save()
+            except TrailError as error:
+                message = Text(str(error), style="#f7768e")
+        super().exit(result, return_code, message)
 
     def status(self, message: str, error: bool = False) -> None:
         self.query_one("#status", Static).update(Text(message, style="#f49b9b" if error else "#9cafbf"))
@@ -541,7 +583,10 @@ class TrailApp(App):
             return False
         key = event.character or event.key
         handled = True
-        if self._normal_prefix == "window":
+        normal_source = not isinstance(self.focused, SourceView) or self.focused.vim.mode == "NORMAL"
+        if not self._normal_prefix and normal_source and key in self.preferences["keybindings"]:
+            getattr(self, "action_" + NORMAL_ACTIONS[self.preferences["keybindings"][key]])()
+        elif self._normal_prefix == "window":
             self._normal_prefix = ""
             self.focus_window(key)
         elif self._normal_prefix in ("leader", "leader-find"):
@@ -1061,10 +1106,30 @@ class TrailApp(App):
         value = event.value.strip().removeprefix(":").strip()
         name, _, argument = value.partition(" ")
         name, argument = name.lower(), argument.strip()
+        if name in ("map", "unmap"):
+            try:
+                parts = argument.split()
+                if name == "map" and len(parts) == 2:
+                    validate_mapping(*parts)
+                    if parts[0] not in self.preferences["keybindings"] and len(self.preferences["keybindings"]) >= 50:
+                        raise TrailError("Save at most 50 normal-mode mappings.")
+                    self.preferences["keybindings"][parts[0]] = parts[1]
+                elif name == "unmap" and len(parts) == 1:
+                    validate_mapping(parts[0], "help")
+                    self.preferences["keybindings"].pop(parts[0], None)
+                else:
+                    raise TrailError("Use :map KEY ACTION or :unmap KEY. :maps lists mappings.")
+            except TrailError as error:
+                self.status(str(error), error=True)
+                return
+            self.action_close_find()
+            self.status(f"Normal-mode mapping {name} updated. Saved on exit.")
+            return
         settings = {"ignorecase": ("#find-case", False), "noignorecase": ("#find-case", True),
                     "regex": ("#find-regex", True), "noregex": ("#find-regex", False)}
         actions = {
             "help": self.action_help, "symbols": self.action_browse_symbols,
+            "maps": self.action_help,
             "follow": self.action_follow,
             "sidebar": self.action_toggle_sidebar,
             "before": lambda: self.set_source_mode("before"),
@@ -1144,6 +1209,8 @@ class TrailApp(App):
     @on(Input.Changed, "#find-input")
     @on(Checkbox.Changed, "#find-case, #find-regex")
     def find_changed(self) -> None:
+        self.preferences["find_case"] = self.query_one("#find-case", Checkbox).value
+        self.preferences["find_regex"] = self.query_one("#find-regex", Checkbox).value
         self.refresh_search()
 
     @on(Input.Submitted, "#find-input")
@@ -1207,6 +1274,7 @@ class TrailApp(App):
             available = self.query_one("#body").size.width or self.size.width
         maximum = max(16, min(70, available - 55))
         self.sidebar_width = max(16, min(width, maximum))
+        self.preferences["sidebar_width"] = self.sidebar_width
         self.query_one("#files-pane").styles.width = self.sidebar_width
 
     def on_resize(self, event: events.Resize) -> None:
@@ -1223,6 +1291,7 @@ class TrailApp(App):
 
     def action_toggle_sidebar(self) -> None:
         self._sidebar_visible = not self._sidebar_visible
+        self.preferences["sidebar_visible"] = self._sidebar_visible
         self.query_one("#files-pane").display = self._sidebar_visible
         self.query_one("#sidebar-divider").display = self._sidebar_visible
         self.query_one("#source", SourceView).focus()
@@ -1230,7 +1299,7 @@ class TrailApp(App):
     def action_help(self) -> None:
         self.close_prompt()
         self.query_one("#source" if self.snapshot else "#files").focus()
-        self.push_screen(HelpScreen())
+        self.push_screen(HelpScreen(self.preferences["keybindings"]))
 
     def action_jump(self) -> None:
         if self.snapshot is None:

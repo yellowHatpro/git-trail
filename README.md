@@ -160,6 +160,16 @@ The `:` prompt also accepts `help`, `q`, a line number such as `42`, `files`,
 `diff`, `commit`, and `sidebar`. `:filter` clears the history filter. Commands
 only change the view; Git Trail keeps the repository read-only.
 
+Layout width/visibility and search case/regex settings are saved on exit. Use
+`:map x symbols` to assign an unused printable normal-mode key, `:unmap x`
+to remove it, and `:maps` to see mappings. Built-in Vim keys remain reserved.
+Mappings are inactive in prompts, dialogs, and visual selections.
+
+Settings use a private, atomic `state.json` in `~/.config/git-trail` (or
+`$XDG_CONFIG_HOME/git-trail`). `GIT_TRAIL_STATE_DIR` overrides the directory.
+Keep it outside inspected repositories. Invalid settings are reported and
+preserved for repair; save failures are shown when exiting.
+
 ## CLI output
 
 ```sh
