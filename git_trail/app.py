@@ -245,6 +245,12 @@ class HelpScreen(ModalScreen):
                 "Ctrl+L  Filter history   Ctrl+D  Diff / commit details\n"
                 "F4  Cycle After / Before / Starting source\n"
                 "Ctrl+Y  Copy selected commit SHA\n\n"
+                "[bold]Diff[/]\n"
+                "]c / [c or F6 / Shift+F6  Next / previous edit block\n"
+                "j / k or arrows  Select row     gg / G  First / last row\n"
+                "h / l  Scroll horizontally     Enter  Historical source line\n"
+                ":split / :unified  Compare layouts (split needs 60 columns)\n"
+                ":diffsource / :diffbefore / :diffafter  Open selected side\n\n"
                 "[bold]Filters[/]\n"
                 'Files: fuzzy words, ext:py, ext:ts. Example: app ext:py\n'
                 'History: words match subject, author, SHA, or patch.\n'

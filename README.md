@@ -7,6 +7,7 @@ that changed that selection, see the source at each revision, and inspect its di
 Search code, filter history, and read the full commit context without leaving your terminal.
 Follow whole symbols through refactors, bookmark exact revisions, and resume
 your last session with saved layout, search options, and custom normal-mode keys.
+Compare changes side by side and jump from a diff row to its exact historical source.
 
 ![Git Trail showing source, its commit timeline, and a selected-range diff](docs/images/git-trail.svg)
 
@@ -68,6 +69,18 @@ The split view shows historical line numbers and keeps long lines scrollable.
 It falls back to unified when the diff pane has fewer than 60 columns.
 Use `:unified` to return to the default layout.
 
+In the diff pane, `]c` / `[c` move between edit blocks, including separate edits
+inside one large function hunk. F6 / Shift+F6 also work from other normal panes.
+Use j / k, arrows, or gg / G to select a row; h / l scroll horizontally.
+Click either column in a split diff to select that side. Enter opens the exact
+historical filename and line: removed lines use the first parent, added lines
+use the selected commit. Context lines support either side.
+`:diffsource` opens the selected side; `:diffbefore` / `:diffafter` choose a side
+explicitly. Headers, newline markers, and empty split cells have no source line.
+Missing Git objects report an error and keep the current view.
+
+![Git Trail comparing changes side by side](docs/images/git-trail-split.png)
+
 Git Trail uses a read-only subset of Vim navigation. It does not run Neovim or
 load Neovim plugins. Source starts in **NORMAL** mode; typing cannot edit files.
 
@@ -79,14 +92,17 @@ load Neovim plugins. Source starts in **NORMAL** mode; typing cannot edit files.
 | gg / G | First / last committed line |
 | 3j / 2w / 42gg | Counted motions or go to a numbered line |
 | v / V | Inclusive character / whole-line visual selection |
-| Enter | Trace the current line or visual selection |
+| Enter in source | Trace the current line or visual selection |
 | Escape | Leave visual mode or close a prompt |
 | / | Search source; filter files or history when that pane is focused |
 | n / N | Next / previous source match, with the prompt closed |
 | Ctrl+W then h / j / k / l | Move to the adjacent pane |
 | Ctrl+W then w | Cycle files, source, timeline, and review |
 | j / k / gg / G in lists | Navigate files or commits |
-| j / k / h / l in review | Scroll vertically or horizontally |
+| j / k / gg / G in diff | Select a diff row |
+| h / l in review | Scroll horizontally |
+| ]c / [c in diff | Next / previous edit block, wrapping |
+| Enter in diff | Open the selected historical source line |
 | Space then f then f / s / h | Find files / symbols / history |
 | : | Open the command prompt |
 | ? / q | Help / quit |
@@ -105,6 +121,7 @@ The existing shortcuts also work:
 | Ctrl+L | Focus the history filter |
 | Ctrl+D | Switch between diff and commit context |
 | F4 | Cycle After, Before, and Starting source views |
+| F6 / Shift+F6 in normal mode | Next / previous diff edit block |
 | Ctrl+Y | Copy the selected commit SHA through the terminal clipboard |
 | Ctrl+Shift+Left / Right | Narrow / widen the sidebar |
 | F2 | Hide / show the sidebar |
@@ -163,12 +180,14 @@ change. Invalid filters show an explanation and preserve the last valid results.
 
 The `:` prompt also accepts `help`, `q`, a line number such as `42`, `files`,
 `file src ext:py`, `symbols`, `filter author:Jane`, `after`, `before`, `starting`,
-`diff`, `commit`, and `sidebar`. `:filter` clears the history filter. Commands
+`diff`, `commit`, `sidebar`, `split`, `unified`, `nextchange`, `prevchange`,
+`diffsource`, `diffbefore`, and `diffafter`. `:filter` clears the history filter. Commands
 only change the view; Git Trail keeps the repository read-only.
 
 Layout width/visibility and search case/regex settings are saved on exit. Use
 `:map x symbols` to assign an unused printable normal-mode key, `:unmap x`
 to remove it, and `:maps` to see mappings. Built-in Vim keys remain reserved.
+Diff actions `nextchange`, `prevchange`, and `diffsource` can also be mapped.
 Mappings are inactive in prompts, dialogs, and visual selections.
 
 Settings use a private, atomic `state.json` in `~/.config/git-trail` (or
@@ -279,3 +298,5 @@ mouse and keyboard scrolling/resizing, source search, combined filters,
 historical source across renames, full commit context, bounded caches, stale
 async results, conservative refactor matches, atomic settings, exact bookmark
 and session restoration, and unchanged repository files and index.
+Diff coverage includes split alignment, exact source coordinates, pruned objects,
+mouse selection, Vim navigation, and interrupted source jumps.
