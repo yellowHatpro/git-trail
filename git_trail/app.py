@@ -28,6 +28,7 @@ from .state import DEFAULTS, NORMAL_ACTIONS, StateStore, validate_mapping
 from .navigation import NavigationSupport, Visit, bookmark_name
 from .diff import DiffPatch, SplitRow
 from .diff_navigation import DiffNavigationSupport
+from .explorer import FileExplorer, display_path
 from .vim import VimCursor
 from .widgets import DiffContent, DiffScroll, PaneDivider
 
@@ -131,6 +132,20 @@ class JumpScreen(ModalScreen[int | None]):
         self.dismiss(None)
 
 
+class PathScreen(ModalScreen):
+    BINDINGS = [Binding("escape,enter", "dismiss", "Close")]
+
+    def __init__(self, path: str):
+        super().__init__()
+        self.path = path
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="help-dialog"):
+            yield Static("REPOSITORY PATH")
+            yield Static(Text(display_path(self.path)), markup=False)
+            yield Static("\nEnter / Escape closes")
+
+
 class SymbolScreen(ModalScreen[LineRange | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
@@ -229,12 +244,15 @@ class HelpScreen(ModalScreen):
                 ":set ignorecase / noignorecase     :set regex / noregex\n"
                 ":before / :after / :starting     :diff / :commit\n"
                 ":file ext:py     :filter author:Jane     :symbols\n"
+                ":path  Inspect the selected file or folder path\n"
                 ":follow  Track a whole symbol through refactors\n"
                 ":bookmark NAME / :open NAME / :unbookmark NAME\n"
                 ":back / :forward / :bookmarks     Alt+Left / Alt+Right\n"
                 ":map KEY ACTION / :unmap KEY / :maps\n"
                 "Ctrl+N/P or Up/Down  Picker results, Enter accepts\n\n"
                 "[bold]Explore[/]\n"
+                "Files: j/k move, gg/G ends, h parent/collapse, l expand\n"
+                "Enter / click toggles folders or opens a file\n"
                 "Ctrl+O  Find a file     Ctrl+B  Find a function/class\n"
                 "Ctrl+G  Go to line      Ctrl+F  Find in displayed code\n"
                 "F3 / Shift+F3  Next / previous match\n"
@@ -406,7 +424,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     #mode.prompt { background: #9ece6a; }
     #status { height: 1; width: 1fr; padding: 0 1; color: #a9b1d6; text-wrap: nowrap; text-overflow: ellipsis; }
     #position { width: 14; height: 1; color: #565f89; content-align: right middle; padding: 0 1; }
-    JumpScreen, SymbolScreen, BookmarkScreen, HelpScreen { align: center middle; background: #000000 65%; }
+    JumpScreen, SymbolScreen, BookmarkScreen, HelpScreen, PathScreen { align: center middle; background: #000000 65%; }
     #jump-dialog {
         width: 54; height: auto; padding: 1 2; border: round #3b4261;
         background: #16161e;
@@ -498,7 +516,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         with Horizontal(id="body"):
             with Vertical(id="files-pane"):
                 yield Static("FILES", id="files-title")
-                yield OptionList(id="files", markup=False)
+                yield FileExplorer(id="files", markup=False)
             yield PaneDivider(id="sidebar-divider", tooltip="Drag to resize. Left/Right when focused.")
             with Vertical(id="workspace"):
                 with Vertical(id="source-pane"):
@@ -735,6 +753,9 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.action_help()
         elif key == "q":
             self.exit()
+        elif isinstance(self.focused, FileExplorer) and key in ("h", "l"):
+            self.focused.collapse_or_parent() if key == "h" else self.focused.expand_selected()
+            self._normal_prefix = ""
         elif isinstance(self.focused, OptionList) and key in ("j", "k", "g", "G"):
             options = self.focused
             if key == "g" and self._normal_prefix != "g":
@@ -771,6 +792,10 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     def open_prompt(self, target: str) -> None:
         if not self.query_one("#prompt-row").display:
             self._prompt_origin = self.focused
+        explorer = self.query_one("#files", FileExplorer)
+        if target != "#file-filter" and explorer.search_mode:
+            explorer.show_tree()
+            self.query_one("#files-title", Static).update(f"FILES  {len(self.all_files)}")
         self._normal_prefix = ""
         self.query_one("#source", SourceView).vim.leave_visual(self.query_one("#source", SourceView), collapse=False)
         self.query_one("#prompt-row").display = True
@@ -782,8 +807,16 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         }[target])
         field = "#find-input" if target == "#find-bar" else target
         self.query_one(field, Input).focus()
+        if target == "#file-filter":
+            if not explorer.search_mode:
+                explorer.show_search(self.filtered_files)
+            self.filter_files(self.query_one("#file-filter", Input).value)
 
     def close_prompt(self) -> None:
+        explorer = self.query_one("#files", FileExplorer)
+        if explorer.search_mode:
+            explorer.show_tree()
+            self.query_one("#files-title", Static).update(f"FILES  {len(self.all_files)}")
         self.query_one("#prompt-row").display = False
         for selector in ("#file-filter", "#history-filter", "#find-bar", "#command-input"):
             self.query_one(selector).display = False
@@ -807,14 +840,16 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.status(str(error), error=True)
             return
         self.filtered_files = filtered
-        options = self.query_one("#files", OptionList)
-        options.clear_options()
-        options.add_options(
-            Option(Text(path, no_wrap=True, overflow="ellipsis"), id=str(index))
-            for index, path in enumerate(self.filtered_files)
-        )
-        options.highlighted = 0 if self.filtered_files else None
-        self.query_one("#files-title", Static).update(f"FILES  {len(filtered)}/{len(self.all_files)}")
+        explorer = self.query_one("#files", FileExplorer)
+        explorer.set_paths(self.all_files)
+        if self.query_one("#prompt-row").display and self.query_one("#file-filter").display:
+            explorer.show_search(filtered)
+        else:
+            explorer.show_tree()
+            if self.snapshot is not None:
+                explorer.reveal_path(self.snapshot.path)
+        count = f"{len(filtered)}/{len(self.all_files)}" if explorer.search_mode else str(len(self.all_files))
+        self.query_one("#files-title", Static).update(f"FILES  {count}")
 
     @on(Input.Changed, "#file-filter")
     def file_filter_changed(self, event: Input.Changed) -> None:
@@ -822,13 +857,20 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
 
     @on(Input.Submitted, "#file-filter")
     def file_filter_submitted(self) -> None:
-        options = self.query_one("#files", OptionList)
-        if self.filtered_files and options.highlighted is not None:
-            self.open_file(self.filtered_files[options.highlighted])
+        row = self.query_one("#files", FileExplorer).selected_row
+        if row is not None and not row.directory:
+            self.open_file(row.path)
 
     @on(OptionList.OptionSelected, "#files")
     def file_selected(self, event: OptionList.OptionSelected) -> None:
-        self.open_file(self.filtered_files[event.option_index])
+        explorer = self.query_one("#files", FileExplorer)
+        row = explorer.row_at(event.option_index)
+        if row is None or row.id != event.option.id:
+            return
+        if row.directory:
+            explorer.toggle_directory(row.path)
+        else:
+            self.open_file(row.path)
 
     def open_file(self, path: str) -> None:
         self.run_worker(self.load_file(path), group="file", exclusive=True, exit_on_error=False)
@@ -1184,6 +1226,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         self.open_prompt("#file-filter")
 
     def display_snapshot(self, snapshot: Snapshot) -> None:
+        self.query_one("#files", FileExplorer).reveal_path(snapshot.path)
         source = self.query_one("#source", SourceView)
         language = {
             ".py": "python", ".js": "javascript", ".go": "go", ".rs": "rust",
@@ -1294,6 +1337,18 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         self.open_prompt("#command-input")
         self.query_one("#command-input", Input).value = ""
 
+    def action_path(self) -> None:
+        explorer = self.query_one("#files", FileExplorer)
+        row = explorer.selected_row
+        if row is not None and (self._prompt_origin is explorer or self.snapshot is None):
+            path = row.path + ("/" if row.directory else "")
+        elif self.snapshot is not None:
+            path = self.snapshot.path
+        else:
+            self.status("Choose a file or folder first.", error=True)
+            return
+        self.push_screen(PathScreen(path))
+
     @on(Input.Submitted, "#command-input")
     def command_submitted(self, event: Input.Submitted) -> None:
         value = event.value.strip().removeprefix(":").strip()
@@ -1331,6 +1386,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
                     "regex": ("#find-regex", True), "noregex": ("#find-regex", False)}
         actions = {
             "help": self.action_help, "symbols": self.action_browse_symbols,
+            "path": self.action_path,
             "maps": self.action_help,
             "follow": self.action_follow,
             "back": self.action_back, "forward": self.action_forward,
