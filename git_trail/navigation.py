@@ -113,12 +113,23 @@ class NavigationSupport:
 
     def begin_navigation(self) -> int:
         self._navigation_generation += 1
+        self._diff_request = None
         self._restoring = False
         self._navigation_target_index = None
         self._restore_leaving = None
         self._navigation_ready = False
         self._symbol_cancel.set()
         return self._navigation_generation
+
+    def navigation_context(self):
+        if self._restoring:
+            return self._restore_previous_ready, self._restore_leaving
+        pending = getattr(self, "_diff_request", None)
+        if pending and pending[0] == self._navigation_generation:
+            _, ready, visit, index = pending
+            return ready, (index, visit) if visit is not None else None
+        current = self.current_visit()
+        return self._navigation_ready, (self.journal.index, current) if current else None
 
     def current_visit(self) -> Visit | None:
         if not self._navigation_ready:
@@ -184,10 +195,9 @@ class NavigationSupport:
         self.start_restore(Visit.from_dict(items[name]))
 
     def start_restore(self, visit: Visit, index: int | None = None, *, leaving=None) -> None:
+        previous_ready, settled_leaving = self.navigation_context()
         if leaving is None:
-            current = self.current_visit()
-            leaving = self._restore_leaving if self._restoring else ((self.journal.index, current) if current else None)
-        previous_ready = self._restore_previous_ready if self._restoring else self._navigation_ready
+            leaving = settled_leaving
         generation = self.begin_navigation()
         self._restoring = True
         self._restore_previous_ready = previous_ready
@@ -212,8 +222,7 @@ class NavigationSupport:
             index = base + delta
             if not 0 <= index < len(self.journal.visits):
                 raise TrailError("No earlier visit." if delta < 0 else "No later visit.")
-            current = self.current_visit()
-            leaving = self._restore_leaving if self._restoring else ((self.journal.index, current) if current else None)
+            _, leaving = self.navigation_context()
             visit = leaving[1] if leaving and index == leaving[0] else self.journal.visits[index]
             self.start_restore(visit, index, leaving=leaving)
         except TrailError as error:
@@ -264,9 +273,7 @@ class NavigationSupport:
 
     async def restore_visit(self, visit: Visit, index: int | None = None, *, request=None) -> bool:
         if request is None:
-            previous_ready = self._restore_previous_ready if self._restoring else self._navigation_ready
-            current = self.current_visit()
-            leaving = self._restore_leaving if self._restoring else ((self.journal.index, current) if current else None)
+            previous_ready, leaving = self.navigation_context()
             generation = self.begin_navigation()
         else:
             generation, previous_ready, leaving = request

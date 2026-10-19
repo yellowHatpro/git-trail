@@ -27,8 +27,9 @@ from .theme import BACKGROUND, EDITOR_THEME
 from .state import DEFAULTS, NORMAL_ACTIONS, StateStore, validate_mapping
 from .navigation import NavigationSupport, Visit, bookmark_name
 from .diff import DiffPatch, SplitRow
+from .diff_navigation import DiffNavigationSupport
 from .vim import VimCursor
-from .widgets import DiffScroll, PaneDivider
+from .widgets import DiffContent, DiffScroll, PaneDivider
 
 
 class DiffStyle(PygmentsStyle):
@@ -326,7 +327,7 @@ class BookmarkScreen(ModalScreen[str | None]):
         self.move_result(-1)
 
 
-class TrailApp(NavigationSupport, App):
+class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     TITLE = "Git Trail"
     SUB_TITLE = "Source · History · Context"
     ENABLE_COMMAND_PALETTE = False
@@ -428,6 +429,8 @@ class TrailApp(NavigationSupport, App):
         Binding("ctrl+l", "find_history", "Filter", priority=True),
         Binding("ctrl+d", "details", "Details", priority=True),
         Binding("f4", "cycle_source", "Source view", show=False, priority=True),
+        Binding("f6", "nextchange", "Next change block", show=False, priority=True),
+        Binding("shift+f6", "prevchange", "Previous change block", show=False, priority=True),
         Binding("ctrl+y", "copy_sha", "Copy SHA", show=False, priority=True),
         Binding("ctrl+shift+left", "narrow_sidebar", "Narrow sidebar", show=False, priority=True),
         Binding("ctrl+shift+right", "widen_sidebar", "Widen sidebar", show=False, priority=True),
@@ -480,6 +483,9 @@ class TrailApp(NavigationSupport, App):
         self._diff_cursor: int | None = None
         self._diff_active = False
         self._diff_separator = 0
+        self._diff_side: str | None = None
+        self._diff_request = None
+        self._diff_source_selection = None
 
     def compose(self) -> ComposeResult:
         yield Static(f"Git Trail  /  {self.repository.root.name}  /  {self.repository.commit[:7]}", id="workspace-title")
@@ -512,7 +518,7 @@ class TrailApp(NavigationSupport, App):
                                     yield Static("SELECTED-RANGE DIFF", id="diff-title")
                                     yield Button("Unified", id="diff-layout", compact=True, tooltip="Toggle unified or side-by-side diff (:split / :unified)")
                                 with DiffScroll(id="diff-scroll"):
-                                    yield Static(
+                                    yield DiffContent(
                                         "Choose a file, select lines, and press Enter.\n\n"
                                         "Ctrl+B finds functions and classes.\n"
                                         "Ctrl+F searches the displayed source.\n"
@@ -619,6 +625,10 @@ class TrailApp(NavigationSupport, App):
             self.set_editor_mode("NORMAL")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in ("nextchange", "prevchange"):
+            return True
+        if action == "diffsource":
+            return self.diff_navigation_allowed()
         if action in ("window_prefix", "back", "forward"):
             return not isinstance(self.focused, Input) and not isinstance(self.screen, ModalScreen)
         if action in ("prompt_next", "prompt_previous"):
@@ -679,6 +689,8 @@ class TrailApp(NavigationSupport, App):
         normal_source = not isinstance(self.focused, SourceView) or self.focused.vim.mode == "NORMAL"
         if not self._normal_prefix and normal_source and key in self.preferences["keybindings"]:
             getattr(self, "action_" + NORMAL_ACTIONS[self.preferences["keybindings"][key]])()
+        elif self.handle_diff_key(event):
+            return True
         elif self._normal_prefix == "window":
             self._normal_prefix = ""
             self.focus_window(key)
@@ -774,6 +786,8 @@ class TrailApp(NavigationSupport, App):
     @on(TextArea.SelectionChanged, "#source")
     def source_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         source = self.query_one("#source", SourceView)
+        if self._diff_request and source.selection != self._diff_source_selection:
+            self.cancel_diff_jump()
         if source.selection != source.vim.expected:
             source.vim.sync(source)
             self.set_editor_mode("NORMAL")
@@ -1030,6 +1044,7 @@ class TrailApp(NavigationSupport, App):
 
     @on(Input.Changed, "#history-filter")
     def history_filter_changed(self) -> None:
+        self.cancel_diff_jump()
         if self._restoring:
             ready = self._restore_previous_ready
             self.begin_navigation()
@@ -1179,8 +1194,9 @@ class TrailApp(NavigationSupport, App):
     def position_diff(self) -> None:
         if self.selected_entry is None:
             return
-        self.render_diff()
-        self.query_one("#diff-scroll", VerticalScroll).scroll_to(y=0, animate=False, immediate=True)
+        self.refresh_diff_layout()
+        if not self._diff_active:
+            self.query_one("#diff-scroll", VerticalScroll).scroll_to(y=0, animate=False, immediate=True)
 
     def render_diff(self) -> None:
         if self.selected_entry is None:
@@ -1189,8 +1205,10 @@ class TrailApp(NavigationSupport, App):
         if key != self._diff_key:
             self._diff_key = key
             self._diff_patch = DiffPatch.parse(self.selected_entry.patch)
-            self._diff_cursor = self._diff_patch.hunks[0].changed if self._diff_patch.hunks else None
+            targets = self._diff_patch.change_targets()
+            self._diff_cursor = targets[0] if targets else None
             self._diff_active = False
+            self._diff_side = None
         pane = self.query_one("#diff-scroll", VerticalScroll)
         width = pane.scrollable_content_region.width
         old_layout = self.diff_effective_layout
@@ -1216,15 +1234,15 @@ class TrailApp(NavigationSupport, App):
                 offset = self._diff_patch.hunks[0].header
                 patch = "\n".join(patch.split("\n")[offset:])
         self._diff_rows = tuple(SplitRow(heading=index) for index in range(offset, len(self._diff_patch.lines)))
-        self.query_one("#diff", Static).update(
-            Syntax(patch, "diff", theme=DIFF_THEME, word_wrap=False, background_color=BACKGROUND,
-                   highlight_lines={active - offset + 1} if active is not None and active >= offset else None)
-        )
+        syntax = Syntax(patch, "diff", theme=DIFF_THEME, word_wrap=False, background_color=BACKGROUND)
+        if active is not None and active >= offset:
+            syntax.stylize_range("on #283457", (active - offset + 1, 0), (active - offset + 2, 0))
+        self.query_one("#diff", Static).update(syntax)
 
     def set_diff_layout(self, layout: str) -> None:
         self.diff_layout = layout
         self.query_one("#review-tabs", TabbedContent).active = "diff-tab"
-        self.render_diff()
+        self.refresh_diff_layout()
         self.query_one("#diff-scroll", VerticalScroll).focus()
         self.status("Side-by-side diff" if self.diff_effective_layout == "split" else
                     ("Unified diff (side-by-side needs 60 diff columns)" if layout == "split" else "Unified diff"))
@@ -1318,6 +1336,11 @@ class TrailApp(NavigationSupport, App):
             "diff": lambda: setattr(self.query_one("#review-tabs", TabbedContent), "active", "diff-tab"),
             "split": lambda: self.set_diff_layout("split"),
             "unified": lambda: self.set_diff_layout("unified"),
+            "nextchange": self.action_nextchange,
+            "prevchange": self.action_prevchange,
+            "diffsource": self.action_diffsource,
+            "diffbefore": lambda: self.jump_diff_source("before"),
+            "diffafter": lambda: self.jump_diff_source("after"),
             "commit": lambda: setattr(self.query_one("#review-tabs", TabbedContent), "active", "commit-tab"),
         }
         if name == "set" and argument not in settings:
@@ -1361,7 +1384,10 @@ class TrailApp(NavigationSupport, App):
             self.query_one("#history-filter", Input).value = argument
             self.query_one("#timeline", OptionList).focus()
         else:
-            actions[name]()
+            if name in ("nextchange", "prevchange", "diffsource", "diffbefore", "diffafter"):
+                self.call_after_refresh(actions[name])
+            else:
+                actions[name]()
 
     def action_bookmarks(self) -> None:
         try:

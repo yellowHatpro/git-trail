@@ -16,6 +16,7 @@ NORMAL_ACTIONS = {
     "filter": "find_history", "follow": "follow", "help": "help",
     "sidebar": "toggle_sidebar",
     "back": "back", "forward": "forward", "bookmarks": "bookmarks",
+    "nextchange": "nextchange", "prevchange": "prevchange", "diffsource": "diffsource",
 }
 RESERVED_KEYS = set("hjklwbvVgGnNq?/ :$0123456789")
 MAX_STATE_BYTES = 1_000_000

@@ -4,12 +4,38 @@ from textual import events
 from textual.binding import Binding
 from textual.widget import Widget
 from textual.containers import VerticalScroll
+from textual.widgets import Static
 
 
 class DiffScroll(VerticalScroll):
+    BINDINGS = [
+        Binding("up", "cursor_up", "Previous diff row", show=False),
+        Binding("down", "cursor_down", "Next diff row", show=False),
+        Binding("enter", "source", "Historical source", show=False),
+    ]
+
     def on_resize(self) -> None:
         if self.app.is_mounted:
-            self.app.call_after_refresh(self.app.render_diff)
+            self.app.call_after_refresh(self.app.refresh_diff_layout)
+
+    def action_cursor_up(self) -> None:
+        self.app.move_diff_cursor(-1)
+
+    def action_cursor_down(self) -> None:
+        self.app.move_diff_cursor(1)
+
+    def action_source(self) -> None:
+        if self.app.diff_focused():
+            self.app.jump_diff_source()
+
+
+class DiffContent(Static):
+    def on_click(self, event: events.Click) -> None:
+        if event.button == 1:
+            offset = event.get_content_offset(self)
+            if offset is not None:
+                self.app.diff_click(offset.y, offset.x)
+                event.stop()
 
 
 class PaneDivider(Widget, can_focus=True):
