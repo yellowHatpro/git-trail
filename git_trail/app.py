@@ -970,12 +970,13 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         if row.directory:
             explorer.toggle_directory(row.path)
         else:
-            self.open_file(row.path)
+            mouse = isinstance(event, FileExplorer.OptionSelected) and event.mouse
+            self.open_file(row.path, focus_source=not mouse)
 
-    def open_file(self, path: str) -> None:
-        self.run_worker(self.load_file(path), group="file", exclusive=True, exit_on_error=False)
+    def open_file(self, path: str, *, focus_source: bool = True) -> None:
+        self.run_worker(self.load_file(path, focus_source=focus_source), group="file", exclusive=True, exit_on_error=False)
 
-    async def load_file(self, path: str, selection: LineRange | None = None) -> None:
+    async def load_file(self, path: str, selection: LineRange | None = None, *, focus_source: bool = True) -> None:
         self.record_visit()
         self.begin_navigation()
         self._symbol_cancel.set()
@@ -1012,16 +1013,17 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         self.traced_snapshot = snapshot
         source = self.query_one("#source", SourceView)
         self.display_snapshot(snapshot)
-        source.focus()
+        if focus_source:
+            source.focus()
         message = "NORMAL · v/V selects · Enter traces · / finds · Ctrl+W panes · ? help"
         if snapshot.working_tree_changed:
             message = "Local edits exist. Showing committed source. " + message
         self.status(message)
         if selection:
             self.select_range(selection)
-            await self.trace_selection(selection, follow=self.initial.follow_symbol)
+            await self.trace_selection(selection, follow=self.initial.follow_symbol, focus_timeline=focus_source)
         elif self.initial.follow_symbol:
-            self.action_follow()
+            self.action_follow(focus_timeline=focus_source)
         else:
             self._navigation_ready = True
             self.record_visit()
@@ -1069,7 +1071,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.trace_selection(selection), group="history", exclusive=True, exit_on_error=False
         )
 
-    async def trace_selection(self, selection: LineRange, *, follow: bool = False) -> None:
+    async def trace_selection(self, selection: LineRange, *, follow: bool = False, focus_timeline: bool = True) -> None:
         if self.snapshot is None:
             return
         self.record_visit()
@@ -1108,7 +1110,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             return
         self.timeline = timeline
         self.apply_history_filter()
-        if self.filtered_entries:
+        if self.filtered_entries and focus_timeline:
             self.query_one("#timeline", OptionList).focus()
         self.status(
             f"{len(timeline.entries)} changes · Ctrl+J/K navigate · F4 source views · F1 help"
@@ -1751,7 +1753,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         except TrailError as error:
             self.status(str(error), error=True)
 
-    def action_follow(self) -> None:
+    def action_follow(self, *, focus_timeline: bool = True) -> None:
         if self.snapshot is None:
             self.status("Choose a source revision first.", error=True)
             return
@@ -1766,7 +1768,8 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         except TrailError as error:
             self.status(str(error), error=True)
             return
-        self.run_worker(self.trace_selection(chosen, follow=True), group="history", exclusive=True, exit_on_error=False)
+        self.run_worker(self.trace_selection(chosen, follow=True, focus_timeline=focus_timeline),
+                        group="history", exclusive=True, exit_on_error=False)
 
     def action_browse_symbols(self) -> None:
         if self.snapshot is None:

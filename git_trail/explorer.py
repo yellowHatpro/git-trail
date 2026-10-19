@@ -113,7 +113,13 @@ class _Directory:
 class FileExplorer(OptionList):
     """Committed paths with cached directories and explicit visible rows."""
 
+    class OptionSelected(OptionList.OptionSelected, namespace="option_list"):
+        def __init__(self, option_list: FileExplorer, option: Option, index: int):
+            super().__init__(option_list, option, index)
+            self.mouse = option_list._mouse_selection
+
     def __init__(self, *args, **kwargs):
+        self._mouse_selection = False
         self.paths: tuple[str, ...] | None = None
         self.rows: tuple[ExplorerRow, ...] = ()
         self.expanded: set[str] = set()
@@ -124,6 +130,14 @@ class FileExplorer(OptionList):
         self._row_indices: dict[str, int] = {}
         self._tree_selected: str | None = None
         super().__init__(*args, **kwargs)
+
+    async def _on_click(self, event: events.Click) -> None:
+        event.prevent_default()
+        self._mouse_selection = True
+        try:
+            await super()._on_click(event)
+        finally:
+            self._mouse_selection = False
 
     @property
     def selected_row(self) -> ExplorerRow | None:
