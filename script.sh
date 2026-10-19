@@ -88,6 +88,64 @@ checkout_source() (
     esac
 )
 
+installed_launcher() {
+    cat <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -z "${TEXTUAL_COLOR_SYSTEM:-}" ]]; then
+    unset TEXTUAL_COLOR_SYSTEM
+    if [[ -z "${NO_COLOR+x}" && "${TERM_PROGRAM:-}" != Apple_Terminal ]]; then
+        case "${TERM:-}" in
+            ""|dumb|linux|ansi|vt100|vt102|vt220|cons25|cons25-*|xterm|screen) ;;
+            xterm-256color|xterm-direct|xterm-kitty|kitty|alacritty|alacritty-*|\
+            wezterm|wezterm-*|foot|foot-*|tmux-256color|screen-256color|\
+            screen-256color-*|rxvt-unicode-256color|st-256color|*-direct|*-truecolor|*-24bit)
+                export TEXTUAL_COLOR_SYSTEM=truecolor ;;
+            *)
+                case "${COLORTERM:-}" in
+                    truecolor|24bit) export TEXTUAL_COLOR_SYSTEM=truecolor ;;
+                    *)
+                        case "${TERM_PROGRAM:-}" in
+                            iTerm.app|WezTerm|vscode|Hyper|ghostty|kitty)
+                                export TEXTUAL_COLOR_SYSTEM=truecolor ;;
+                        esac
+                        if [[ -n "${KITTY_WINDOW_ID:-}${KONSOLE_VERSION:-}${VTE_VERSION:-}" ]]; then
+                            export TEXTUAL_COLOR_SYSTEM=truecolor
+                        fi
+                        ;;
+                esac
+                ;;
+        esac
+    fi
+fi
+git_trail_source="${BASH_SOURCE[0]}"
+while [[ -L "$git_trail_source" ]]; do
+    git_trail_link_directory="$(CDPATH= cd -P -- "$(dirname -- "$git_trail_source")" && pwd)"
+    git_trail_source="$(readlink "$git_trail_source")"
+    if [[ "$git_trail_source" != /* ]]; then
+        git_trail_source="$git_trail_link_directory/$git_trail_source"
+    fi
+done
+git_trail_directory="$(CDPATH= cd -P -- "$(dirname -- "$git_trail_source")" && pwd)"
+git_trail_python="$git_trail_directory/.venv/bin/python"
+if [[ ! -x "$git_trail_python" ]]; then
+    printf '%s\n' "Git Trail needs its Python environment. See $git_trail_directory/README.md." >&2
+    exit 2
+fi
+exec "$git_trail_python" -I -c \
+    'import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv.pop(1)); from git_trail.cli import main; raise SystemExit(main())' \
+    "$git_trail_directory" "$@"
+LAUNCHER
+}
+
+launcher_is_current() {
+    local actual=""
+    if IFS= read -r -d '' -n $((${#launcher_text} + 1)) actual < "$current_target/git-trail"; then
+        return 1
+    fi
+    [[ "$actual" == "$launcher_text" ]]
+}
+
 same_source_is_healthy() {
     local receipt="" receipt_after="" receipt_version expected runtime physical version
     [[ -n "$immutable_ref" && -n "$current_target" &&
@@ -149,6 +207,106 @@ print(expected)
         "$receipt_after" == "$receipt" &&
         -L "$root/current" && "$(readlink "$root/current")" == "$current_target" &&
         -L "$command_path" && "$(readlink "$command_path")" == "$command_target" ]] || return 1
+    installed_version="$receipt_version"
+}
+
+repair_launcher() {
+    "$current_target/.venv/bin/python" -I -c '
+import os
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+
+root, bundle, command, command_target, source_owner, source_ref, version, owner, launcher = sys.argv[1:]
+current = os.path.join(root, "current")
+path = os.path.join(bundle, "git-trail")
+canonical_path = os.path.realpath(path)
+python = os.path.join(bundle, ".venv", "bin", "python")
+
+def identity(metadata):
+    return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size, metadata.st_mtime_ns
+
+def read_regular(filename, limit):
+    fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as source:
+        metadata = os.fstat(source.fileno())
+        data = source.read(limit + 1)
+    if not stat.S_ISREG(metadata.st_mode) or len(data) > limit:
+        raise SystemExit("Git Trail: invalid managed launcher data.")
+    if identity(os.lstat(filename)) != identity(metadata):
+        raise SystemExit("Git Trail: managed files changed during launcher repair.")
+    return identity(metadata), data
+
+files = {
+    os.path.join(root, ".git-trail-install"): read_regular(os.path.join(root, ".git-trail-install"), 256),
+    os.path.join(bundle, ".git-trail-source"): read_regular(os.path.join(bundle, ".git-trail-source"), 4096),
+    path: read_regular(path, 65536),
+}
+if files[os.path.join(root, ".git-trail-install")][1] != (owner + "\n").encode():
+    raise SystemExit("Git Trail: installation ownership changed.")
+if files[os.path.join(bundle, ".git-trail-source")][1] != (
+    source_owner + "\n" + source_ref + "\n" + version + "\n"
+).encode():
+    raise SystemExit("Git Trail: installed source changed.")
+directories = [root, os.path.join(root, "releases"), bundle, os.path.join(bundle, "git_trail")]
+directory_ids = {}
+for directory in directories:
+    metadata = os.lstat(directory)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit("Git Trail: managed directory changed.")
+    directory_ids[directory] = metadata.st_dev, metadata.st_ino, metadata.st_mode
+runtime = os.path.realpath(python)
+if not runtime.startswith(os.path.realpath(bundle) + "/.runtime/python/") or not os.access(runtime, os.X_OK):
+    raise SystemExit("Git Trail: private runtime changed.")
+runtime_id = identity(os.stat(runtime))
+
+def guard():
+    for filename, expected in files.items():
+        if read_regular(filename, 65536) != expected:
+            raise SystemExit("Git Trail: managed files changed during launcher repair.")
+    for directory, expected in directory_ids.items():
+        metadata = os.lstat(directory)
+        if (metadata.st_dev, metadata.st_ino, metadata.st_mode) != expected:
+            raise SystemExit("Git Trail: managed directory changed.")
+    if (
+        not os.path.islink(current) or os.readlink(current) != bundle
+        or not os.path.islink(command) or os.readlink(command) != command_target
+        or os.path.realpath(command) != canonical_path or os.path.realpath(path) != canonical_path
+        or os.path.realpath(python) != runtime or identity(os.stat(runtime)) != runtime_id
+    ):
+        raise SystemExit("Git Trail: installation changed during launcher repair.")
+
+guard()
+fd, temporary = tempfile.mkstemp(prefix=".git-trail-launcher-", dir=bundle)
+try:
+    with os.fdopen(fd, "wb") as output:
+        output.write(launcher.encode())
+    os.chmod(temporary, stat.S_IMODE(files[path][0][2]))
+    staged = read_regular(temporary, 65536)
+    child = subprocess.Popen([temporary, "--version"], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        output, _ = child.communicate(timeout=8)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.communicate(timeout=2)
+        raise SystemExit("Git Trail: repaired launcher version check timed out.")
+    if child.returncode or output != (version + "\n").encode():
+        raise SystemExit("Git Trail: repaired launcher failed its version check.")
+    guard()
+    if read_regular(temporary, 65536) != staged:
+        raise SystemExit("Git Trail: staged launcher changed.")
+    os.replace(temporary, path)
+finally:
+    if os.path.lexists(temporary):
+        os.unlink(temporary)
+' "$root" "$current_target" "$command_path" "$command_target" "$source_owner" \
+        "$immutable_ref" "$installed_version" "$owner" "$launcher_text" </dev/null
 }
 
 cleanup() {
@@ -181,6 +339,7 @@ main() {
     local owner="yellowHatpro/git-trail installer v1"
     local source_owner="yellowHatpro/git-trail source v1" immutable_ref=""
     local command_target="" legacy_source=""
+    local launcher_text="" installed_version=""
     root="" bundle="" locked=0 activated=0 created_root=0
 
     while [[ $# -gt 0 ]]; do
@@ -288,7 +447,13 @@ main() {
         return
     fi
 
+    launcher_text="$(installed_launcher)"$'\n'
     if same_source_is_healthy; then
+        if ! launcher_is_current; then
+            repair_launcher
+            printf 'Updated Git Trail terminal support at %s\n' "$command_path"
+            return
+        fi
         printf 'Git Trail is already up to date at source %s: %s\n' "$immutable_ref" "$command_path"
         return
     fi
@@ -329,6 +494,7 @@ main() {
     "$uv_path" --no-config venv --python 3.13 --managed-python "$bundle/.venv" </dev/null
     "$uv_path" --no-config pip install --python "$bundle/.venv/bin/python" \
         --only-binary :all: --link-mode copy -r "$bundle/pyproject.toml" </dev/null
+    printf '%s' "$launcher_text" > "$bundle/git-trail"
     version="$("$bundle/git-trail" --version </dev/null)"
     [[ "$version" == "git-trail "* && "$version" != *$'\n'* && "$version" != *$'\r'* ]] ||
         fail "The installed command failed its version check."
