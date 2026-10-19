@@ -5,6 +5,8 @@ A terminal app for answering: **when did this part of the file change?**
 Select a line, several lines, a paragraph, a function, or a class. Browse the commits
 that changed that selection, see the source at each revision, and inspect its diff.
 Search code, filter history, and read the full commit context without leaving your terminal.
+Follow whole symbols through refactors, bookmark exact revisions, and resume
+your last session with saved layout, search options, and custom normal-mode keys.
 
 ![Git Trail showing source, its commit timeline, and a selected-range diff](docs/images/git-trail.svg)
 
@@ -175,6 +177,8 @@ Use `:bookmark NAME` to save the current source selection and history view,
 opens a searchable picker with Ctrl+N/P and Enter. Names can contain spaces.
 Each repository has its own bookmarks, with a limit of 100.
 
+![Searching saved source and history views](docs/images/git-trail-bookmarks.png)
+
 `:back` / `:forward` or Alt+Left / Alt+Right return to earlier/later visits.
 `Space h b`, `Space h f`, and `Space h m` open Back, Forward, and Bookmarks.
 The current run remembers up to 200 visits. Opening a new view after Back
@@ -269,4 +273,5 @@ repositories or require network access.
 Coverage includes the long-function parser regression, real range history,
 mouse and keyboard scrolling/resizing, source search, combined filters,
 historical source across renames, full commit context, bounded caches, stale
-async results, and unchanged repository files and index.
+async results, conservative refactor matches, atomic settings, exact bookmark
+and session restoration, and unchanged repository files and index.
