@@ -6,7 +6,7 @@ from textual import events
 from textual.screen import ModalScreen
 from textual.widgets import Input, TabbedContent
 
-from .git import TrailError
+from .git import HistoryView, TrailError
 
 
 class DiffNavigationSupport:
@@ -41,7 +41,7 @@ class DiffNavigationSupport:
             self.call_after_refresh(self.reveal_diff_cursor)
 
     def reveal_diff_cursor(self) -> None:
-        if not self.selected_entry or not self._diff_active:
+        if not self.review_entry or not self._diff_active:
             return
         row = self.diff_visible_row()
         if row is None:
@@ -52,7 +52,7 @@ class DiffNavigationSupport:
             pane.scroll_to(y=max(0, row - min(2, height - 1)), animate=False, immediate=True)
 
     def select_diff_index(self, index: int, side: str | None = None) -> None:
-        if not self.selected_entry or not 0 <= index < len(self._diff_patch.lines):
+        if not self.review_entry or not 0 <= index < len(self._diff_patch.lines):
             return
         line = self._diff_patch.lines[index]
         chosen = side or (
@@ -66,12 +66,14 @@ class DiffNavigationSupport:
         self._diff_active = True
         self.refresh_diff_layout()
         number = line.old if self._diff_side == "before" else line.new
-        path = self.selected_entry.old_path if self._diff_side == "before" else self.selected_entry.new_path
-        self.status(f"{self._diff_side.capitalize()} · {path}:{number} · Enter: source"
-                    if number is not None else "This diff row has no source line.")
+        path = self.review_entry.old_path if self._diff_side == "before" else self.review_entry.new_path
+        self.status(self.comparison_footer(
+            f"{self._diff_side.capitalize()} · {path}:{number} · Enter: source"
+            if number is not None else "This diff row has no source line."
+        ))
 
     def move_diff_cursor(self, delta: int = 0, *, edge: str | None = None) -> None:
-        if not self.diff_focused() or not self.selected_entry or not self._diff_rows:
+        if not self.diff_focused() or not self.review_entry or not self._diff_rows:
             return
         rows = [row for row, item in enumerate(self._diff_rows) if item.indices]
         if not rows:
@@ -88,7 +90,7 @@ class DiffNavigationSupport:
                                self._diff_side if self.diff_effective_layout == "split" else None)
 
     def diff_click(self, row: int, column: int) -> None:
-        if not self.selected_entry or not 0 <= row < len(self._diff_rows):
+        if not self.review_entry or not 0 <= row < len(self._diff_rows):
             return
         item = self._diff_rows[row]
         if not item.indices:
@@ -103,11 +105,11 @@ class DiffNavigationSupport:
         self.query_one("#diff-scroll").focus()
 
     def next_diff_change(self, delta: int) -> None:
-        if not self.diff_navigation_allowed() or self.selected_entry is None:
+        if not self.diff_navigation_allowed() or self.review_entry is None:
             return
         targets = self._diff_patch.change_targets()
         if not targets:
-            self.status("No navigable source changes in this diff.")
+            self.status(self.comparison_footer("No navigable source changes in this diff."))
             return
         if not self._diff_active or self._diff_cursor is None:
             target = targets[0 if delta > 0 else -1]
@@ -118,7 +120,9 @@ class DiffNavigationSupport:
         self.query_one("#review-tabs", TabbedContent).active = "diff-tab"
         self.select_diff_index(target)
         self.query_one("#diff-scroll").focus()
-        self.status(f"Change {targets.index(target) + 1}/{len(targets)} · Enter: historical source")
+        self.status(self.comparison_footer(
+            f"Change {targets.index(target) + 1}/{len(targets)} · Enter: historical source"
+        ))
 
     def action_nextchange(self) -> None:
         self.next_diff_change(1)
@@ -158,9 +162,10 @@ class DiffNavigationSupport:
         return True
 
     def jump_diff_source(self, side: str | None = None) -> None:
-        if not self.diff_navigation_allowed() or self.selected_entry is None or self._diff_cursor is None:
+        if not self.diff_navigation_allowed() or self.review_entry is None or self._diff_cursor is None:
             return
-        entry = self.selected_entry
+        entry = self.review_entry
+        comparison = self.comparison
         index = self._diff_cursor
         chosen = side or self._diff_side or ("before" if self._diff_patch.lines[index].kind == "delete" else "after")
         if side and self.diff_effective_layout == "split":
@@ -181,12 +186,17 @@ class DiffNavigationSupport:
         self._view_generation += 1
         view_generation = self._view_generation
         self.workers.cancel_group(self, "view")
-        repository = self.repository
+        repository = self._timeline_repository if self.timeline else self.repository
 
         def prepare():
-            view = repository.diff_source(entry, number, chosen == "before")
-            details = repository.details(entry.commit)
-            source_repository = repository.at(view.snapshot.commit)
+            if comparison is not None:
+                view = repository.parent_diff_source(comparison, number, chosen == "before")
+                details = repository.canonical_at(entry.commit).details(entry.commit)
+                source_repository = repository.canonical_at(view.snapshot.commit)
+            else:
+                view = repository.diff_source(entry, number, chosen == "before")
+                details = repository.details(entry.commit)
+                source_repository = repository.at(view.snapshot.commit)
             return view.snapshot, view.selection, view.note, details, source_repository
 
         async def jump() -> None:
@@ -199,7 +209,7 @@ class DiffNavigationSupport:
                     self.status(f"Could not open diff source: {error}", error=True)
                 return
             if (generation != self._navigation_generation or view_generation != self._view_generation
-                    or self.selected_entry is not entry):
+                    or self.review_entry is not entry or self.comparison is not comparison):
                 return
             if self.query_one("#source").selection != source_selection:
                 self.cancel_diff_jump()
@@ -213,8 +223,13 @@ class DiffNavigationSupport:
             self.source_mode = chosen
             for mode in ("before", "after", "starting"):
                 self.query_one(f"#view-{mode}").set_class(mode == chosen, "active")
-            await self.load_entry(entry, view_generation, chosen, prepared=prepared)
-            self.status(prepared[2])
+            if comparison is not None:
+                self.apply_comparison_view(HistoryView(*prepared[:3]), prepared[3], prepared[4], chosen)
+                self._navigation_ready = True
+                self.record_visit()
+            else:
+                await self.load_entry(entry, view_generation, chosen, prepared=prepared)
+                self.status(prepared[2])
             if not self.query_one("#prompt-row").display and not isinstance(self.focused, Input):
                 self.query_one("#source").focus()
 

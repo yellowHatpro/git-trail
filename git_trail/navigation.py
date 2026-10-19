@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 import asyncio
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
-from .git import LineRange, TrailError
+from .git import LineRange, Repository, TrailError
 from .filters import HistoryFilter
+from .merge import CanonicalRepository
 
 
 @dataclass(frozen=True)
@@ -26,9 +27,19 @@ class Visit:
     display_path: str = ""
     display_start: int = 0
     display_end: int = 0
+    comparison_commit: str = ""
+    comparison_path: str = ""
+    comparison_parent: str = ""
+    canonical: bool = False
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        value = asdict(self)
+        if not any((self.comparison_commit, self.comparison_path, self.comparison_parent)):
+            for key in ("comparison_commit", "comparison_path", "comparison_parent"):
+                value.pop(key)
+        if not self.canonical:
+            value.pop("canonical")
+        return value
 
     @classmethod
     def from_dict(cls, value: dict):
@@ -46,7 +57,7 @@ class Visit:
                 raise ValueError("path must be repository-relative")
             if type(result.start) is not int or type(result.end) is not int or not 1 <= result.start <= result.end <= 2_000_000_000:
                 raise ValueError("invalid line range")
-            if type(result.follow) is not bool or type(result.traced) is not bool:
+            if type(result.follow) is not bool or type(result.traced) is not bool or type(result.canonical) is not bool:
                 raise ValueError("invalid tracking flags")
             if result.mode not in ("after", "before", "starting") or not isinstance(result.history_filter, str) or len(result.history_filter) > 10_000:
                 raise ValueError("invalid view settings")
@@ -57,9 +68,20 @@ class Visit:
                                    path=result.display_path, start=result.display_start, end=result.display_end))
             elif result.display_path or type(result.display_start) is not int or type(result.display_end) is not int or result.display_start or result.display_end:
                 raise ValueError("incomplete displayed source")
+            if not all(isinstance(item, str) for item in (
+                result.comparison_commit, result.comparison_path, result.comparison_parent,
+            )):
+                raise ValueError("invalid merge comparison")
+            if any((result.comparison_commit, result.comparison_path, result.comparison_parent)):
+                if (not re.fullmatch(r"[0-9a-f]{40,64}", result.comparison_commit)
+                        or not re.fullmatch(r"[0-9a-f]{40,64}", result.comparison_parent)
+                        or result.mode not in ("before", "after")):
+                    raise ValueError("incomplete merge-parent comparison")
+                cls.from_dict(dict(repository=result.repository, commit=result.comparison_commit,
+                                   path=result.comparison_path, start=1, end=1))
             if result.follow and not result.traced or result.selected_commit and not result.traced:
                 raise ValueError("history settings require a traced selection")
-            if not result.traced and (result.mode != "starting" or result.history_filter):
+            if not result.traced and ((result.mode != "starting" and not result.comparison_commit) or result.history_filter):
                 raise ValueError("untraced selections use the starting source without a history filter")
             return result
         except (ValueError, TypeError) as error:
@@ -112,6 +134,8 @@ class NavigationSupport:
         return str(self.repository.root.resolve())
 
     def begin_navigation(self) -> int:
+        if hasattr(self, "cancel_merge_requests"):
+            self.cancel_merge_requests()
         self._navigation_generation += 1
         self._diff_request = None
         self._restoring = False
@@ -134,6 +158,19 @@ class NavigationSupport:
     def current_visit(self) -> Visit | None:
         if not self._navigation_ready:
             return None
+        if getattr(self, "comparison", None) is not None:
+            base = self._comparison_base_visit
+            if base is None:
+                return None
+            display = dict(display_commit="", display_path="", display_start=0, display_end=0)
+            if self.snapshot is not None and self.snapshot.lines:
+                current = self.selected_range()
+                display = dict(display_commit=self.snapshot.commit, display_path=self.snapshot.path,
+                               display_start=current.start, display_end=current.end)
+            return replace(base, mode=self.source_mode,
+                           comparison_commit=self.comparison.commit,
+                           comparison_path=self.comparison.path,
+                           comparison_parent=self.comparison.parent_commit, **display)
         anchor = self.traced_snapshot if self.timeline else self.snapshot
         if anchor is None or not anchor.lines:
             return None
@@ -150,6 +187,8 @@ class NavigationSupport:
             selected_commit=self.selected_entry.commit if self.selected_entry else "",
             mode=self.source_mode if self.timeline else "starting",
             history_filter=self._valid_history_filter if self.timeline else "",
+            canonical=isinstance(self._timeline_repository if self.timeline else self.snapshot_repository,
+                                 CanonicalRepository),
             **display,
         )
 
@@ -233,7 +272,12 @@ class NavigationSupport:
         if Path(visit.repository).resolve() != self.repository.root.resolve():
             raise TrailError("Saved visit belongs to a different repository.")
         predicate = HistoryFilter.parse(visit.history_filter)
-        repository = self.repository.at(visit.commit)
+        if visit.canonical:
+            repository = self.repository.canonical_at(visit.commit)
+        elif isinstance(self.repository, CanonicalRepository):
+            repository = Repository(self.repository.root, visit.commit)
+        else:
+            repository = self.repository.at(visit.commit)
         if self.store:
             self.store.allow_repository(repository.root)
         anchor = repository.snapshot(visit.path)
@@ -252,7 +296,7 @@ class NavigationSupport:
                     raise TrailError("Saved change is unavailable in this selection's timeline.")
             elif entries:
                 raise TrailError("Saved timeline does not specify its selected change.")
-            if entry:
+            if entry and not visit.comparison_commit:
                 if visit.mode == "starting":
                     snapshot, selected, note = anchor, selection, "Starting source for this timeline"
                 else:
@@ -265,11 +309,21 @@ class NavigationSupport:
                 snapshot = anchor if not timeline.entries else None
         else:
             snapshot = anchor
+        comparison = None
+        base = None
+        if visit.comparison_commit:
+            scene = self.prepare_comparison(repository, visit.comparison_commit, visit.comparison_path,
+                                            visit.comparison_parent, visit.mode)
+            comparison = scene
+            snapshot = scene.view.snapshot
+            base = replace(visit, comparison_commit="", comparison_path="", comparison_parent="",
+                           mode=visit.mode if visit.traced else "starting",
+                           display_commit="", display_path="", display_start=0, display_end=0)
         if visit.display_commit:
             if snapshot is None or (snapshot.commit, snapshot.path) != (visit.display_commit, visit.display_path):
                 raise TrailError("Saved displayed source does not match its historical view.")
             LineRange(visit.display_start, visit.display_end).validate(len(snapshot.lines))
-        return repository, anchor, selection, timeline, entry, prepared, repository.files()
+        return repository, anchor, selection, timeline, entry, prepared, repository.files(), comparison, base
 
     async def restore_visit(self, visit: Visit, index: int | None = None, *, request=None) -> bool:
         if request is None:
@@ -304,8 +358,10 @@ class NavigationSupport:
             return False
         if generation != self._navigation_generation:
             return False
-        repository, anchor, selection, timeline, entry, prepared, files = prepared_visit
+        repository, anchor, selection, timeline, entry, prepared, files, comparison, base = prepared_visit
+        self.leave_comparison()
         self.repository = repository
+        self._timeline_repository = repository
         self.traced_snapshot = anchor
         self.snapshot_repository = repository
         self.snapshot = anchor
@@ -323,19 +379,19 @@ class NavigationSupport:
             self.query_one(f"#view-{mode}").set_class(mode == visit.mode, "active")
         if timeline:
             self.apply_history_filter(load_view=False)
-            if entry:
+            if entry and comparison is None:
                 self.query_one("#diff-title").update(f"{entry.commit[:10]} · {entry.author} · committed {entry.committed_at}")
                 self.render_diff()
                 self.call_after_refresh(self.position_diff)
                 await self.load_entry(entry, self._view_generation, visit.mode, prepared=prepared)
-            elif not timeline.entries:
+            elif not timeline.entries and comparison is None:
                 self.snapshot = anchor
                 self.display_snapshot(anchor)
                 self.select_range(selection)
                 self.query_one("#source-note").update("\n".join(timeline.warnings))
                 self.query_one("#source-note").add_class("important")
                 self.query_one("#diff").update("\n".join(timeline.warnings))
-        else:
+        elif comparison is None:
             self.filtered_entries = ()
             self.query_one("#timeline").clear_options()
             self.query_one("#timeline-title").update("TIMELINE")
@@ -344,6 +400,12 @@ class NavigationSupport:
             self.query_one("#commit-details").update("Choose a file and trace its source.")
             self.display_snapshot(anchor)
             self.select_range(selection)
+        else:
+            self.filtered_entries = ()
+            self.query_one("#timeline").clear_options()
+            self.query_one("#timeline-title").update("TIMELINE")
+        if comparison is not None:
+            self.apply_comparison(comparison, base)
         if generation != self._navigation_generation:
             return False
         if visit.display_commit:
@@ -361,6 +423,8 @@ class NavigationSupport:
             self.navigation_data["sessions"][self.repository_key] = visit.to_dict()
         else:
             self.record_visit()
-        self.status(f"Restored {visit.path}:{visit.start}:{visit.end} at {visit.commit[:10]}"
-                    + (" · partial symbol history" if timeline and any("Partial" in item for item in timeline.warnings) else ""))
+        self.status(self.comparison_footer(
+            f"Restored {visit.path}:{visit.start}:{visit.end} at {visit.commit[:10]}"
+            + (" · partial symbol history" if timeline and any("Partial" in item for item in timeline.warnings) else "")
+        ))
         return True

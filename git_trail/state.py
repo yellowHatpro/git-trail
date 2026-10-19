@@ -17,6 +17,8 @@ NORMAL_ACTIONS = {
     "filter": "find_history", "follow": "follow", "help": "help",
     "sidebar": "toggle_sidebar",
     "theme": "theme",
+    "merges": "merges", "parents": "parents",
+    "nextparent": "nextparent", "prevparent": "prevparent",
     "back": "back", "forward": "forward", "bookmarks": "bookmarks",
     "nextchange": "nextchange", "prevchange": "prevchange", "diffsource": "diffsource",
 }

@@ -27,6 +27,7 @@ from .navigation import NavigationSupport, Visit, bookmark_name
 from .diff import DiffPatch, SplitRow
 from .diff_navigation import DiffNavigationSupport
 from .explorer import FileExplorer, display_path
+from .merge_navigation import MergeNavigationSupport
 from .vim import VimCursor
 from .widgets import DiffContent, DiffScroll, PaneDivider
 
@@ -321,6 +322,9 @@ class HelpScreen(ModalScreen):
                 "Ctrl+J / Ctrl+K  Older / newer change\n"
                 "Ctrl+L  Filter history   Ctrl+D  Diff / commit details\n"
                 "F4  Cycle After / Before / Starting source\n"
+                "F7 / :merges  Reachable merges     F8 / :parents  Choose merge parent\n"
+                ":parent N  Full-file comparison with this numbered parent\n"
+                ":nextparent / :prevparent  Cycle merge parents\n"
                 "Ctrl+Y  Copy selected commit SHA\n\n"
                 "[bold]Diff[/]\n"
                 "]c / [c or F6 / Shift+F6  Next / previous edit block\n"
@@ -340,7 +344,8 @@ class HelpScreen(ModalScreen):
                 "Mouse wheel / PageUp / PageDown / Home / End  Scroll lists\n"
                 "Tab / Shift+Tab  Change pane    Ctrl+Q  Quit\n\n"
                 "[dim]Committed source only. Cross-file moves and every merge-parent\n"
-                "path are not guaranteed. Before a merge shows its first parent.\n"
+                "path are not guaranteed. Ordinary Before uses the first parent.\n"
+                "Explicit parent review shows the full-file parent-to-merge diff.\n"
                 "Escape closes this guide.[/]"
             ))
 
@@ -410,7 +415,7 @@ class BookmarkScreen(ModalScreen[str | None]):
         self.move_result(-1)
 
 
-class TrailApp(DiffNavigationSupport, NavigationSupport, App):
+class TrailApp(MergeNavigationSupport, DiffNavigationSupport, NavigationSupport, App):
     TITLE = "Git Trail"
     SUB_TITLE = "Source · History · Context"
     ENABLE_COMMAND_PALETTE = False
@@ -466,6 +471,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     #diff-heading { height: 1; background: $trail-surface; }
     #diff-title { width: 1fr; }
     #diff-layout { height: 1; width: 11; min-width: 11; border: none; padding: 0 1; background: $trail-surface; color: $trail-accent; }
+    #merge-parent { height: 1; width: 11; min-width: 11; border: none; padding: 0 1; background: $trail-surface; color: $trail-accent; }
     #review-tabs { height: 1fr; background: $trail-background; }
     TabPane { padding: 0; }
     ContentSwitcher { height: 1fr; }
@@ -517,6 +523,8 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         Binding("f4", "cycle_source", "Source view", show=False, priority=True),
         Binding("f6", "nextchange", "Next change block", show=False, priority=True),
         Binding("shift+f6", "prevchange", "Previous change block", show=False, priority=True),
+        Binding("f7", "merges", "Reachable merges", show=False, priority=True),
+        Binding("f8", "parents", "Merge parents", show=False, priority=True),
         Binding("ctrl+y", "copy_sha", "Copy SHA", show=False, priority=True),
         Binding("ctrl+shift+left", "narrow_sidebar", "Narrow sidebar", show=False, priority=True),
         Binding("ctrl+shift+right", "widen_sidebar", "Widen sidebar", show=False, priority=True),
@@ -570,6 +578,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         self.store = store
         self.preferences = dict(DEFAULTS, keybindings={})
         self.init_navigation()
+        self.init_merges()
         self._valid_history_filter = ""
         self.diff_layout = "unified"
         self.diff_effective_layout = "unified"
@@ -612,6 +621,8 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
                             with TabPane("Diff", id="diff-tab"):
                                 with Horizontal(id="diff-heading"):
                                     yield Static("SELECTED-RANGE DIFF", id="diff-title")
+                                    yield Button("Parents", id="merge-parent", compact=True,
+                                                 tooltip=":parents chooses a merge parent; :merges lists historical merges")
                                     yield Button("Unified", id="diff-layout", compact=True, tooltip="Toggle unified or side-by-side diff (:split / :unified)")
                                 with DiffScroll(id="diff-scroll"):
                                     yield DiffContent(
@@ -628,7 +639,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             yield Static("", id="prompt-label")
             yield Input(placeholder="fuzzy path or ext:py", id="file-filter")
             yield Input(placeholder="author: / after: / text", id="history-filter")
-            yield Input(placeholder="help · files · symbols · filter · set ignorecase", id="command-input")
+            yield Input(placeholder="help · files · merges · parents · filter", id="command-input")
             with Horizontal(id="find-bar"):
                 yield Input(placeholder="find text or function", id="find-input")
                 yield Checkbox("Aa", id="find-case", tooltip="Match case")
@@ -726,7 +737,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.status(*self._status_message)
             self.render_diff()
             context = self.query_one("#commit-details", Static)
-            if self._commit_context and self._commit_context[0] == self.selected_entry and isinstance(context.content, Text):
+            if self._commit_context and self._commit_context[0] == self.review_entry and isinstance(context.content, Text):
                 self.render_commit_context(*self._commit_context)
         return True
 
@@ -925,6 +936,8 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     @on(TextArea.SelectionChanged, "#source")
     def source_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         source = self.query_one("#source", SourceView)
+        if self._merge_pending_context and source.selection != self._merge_pending_context[6]:
+            self.cancel_merge_requests()
         if self._diff_request and source.selection != self._diff_source_selection:
             self.cancel_diff_jump()
         if source.selection != source.vim.expected:
@@ -978,6 +991,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
 
     async def load_file(self, path: str, selection: LineRange | None = None, *, focus_source: bool = True) -> None:
         self.record_visit()
+        self.leave_comparison()
         self.begin_navigation()
         self._symbol_cancel.set()
         self.close_prompt()
@@ -988,6 +1002,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         self.snapshot = None
         self.traced_snapshot = None
         self.snapshot_repository = self.repository
+        self._timeline_repository = self.repository
         self.timeline = None
         self.filtered_entries = ()
         self.selected_entry = None
@@ -1075,6 +1090,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         if self.snapshot is None:
             return
         self.record_visit()
+        self.leave_comparison()
         self.begin_navigation()
         snapshot = self.snapshot
         repository = self.snapshot_repository
@@ -1109,6 +1125,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         if generation != self._history_generation or self.snapshot != snapshot:
             return
         self.timeline = timeline
+        self._timeline_repository = repository
         self.apply_history_filter()
         if self.filtered_entries and focus_timeline:
             self.query_one("#timeline", OptionList).focus()
@@ -1148,6 +1165,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             return
         if load_view:
             self.record_visit()
+            self.leave_comparison()
             self._navigation_ready = False
         self._valid_history_filter = self.query_one("#history-filter", Input).value
         selected_sha = self.selected_entry.commit if self.selected_entry else ""
@@ -1195,6 +1213,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     @on(Input.Changed, "#history-filter")
     def history_filter_changed(self) -> None:
         self.cancel_diff_jump()
+        self.cancel_merge_requests()
         if self._restoring:
             ready = self._restore_previous_ready
             self.begin_navigation()
@@ -1214,10 +1233,19 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             index = next(index for index, entry in enumerate(self.filtered_entries) if entry.commit == event.option.id)
             self.show_entry(index)
 
+    @on(OptionList.OptionSelected, "#timeline")
+    def entry_selected(self, event: OptionList.OptionSelected) -> None:
+        if self.comparison is not None:
+            index = next((index for index, entry in enumerate(self.filtered_entries)
+                          if entry.commit == event.option.id), None)
+            if index is not None:
+                self.show_entry(index)
+
     def show_entry(self, index: int) -> None:
         if self.timeline is None or not 0 <= index < len(self.filtered_entries):
             return
         self.record_visit()
+        self.leave_comparison()
         self.begin_navigation()
         entry = self.filtered_entries[index]
         self.selected_entry = entry
@@ -1245,15 +1273,16 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             if prepared is not None:
                 snapshot, selection, note, details, repository = prepared
             else:
+                trace_repository = self._timeline_repository
                 if mode == "starting":
                     snapshot = self.traced_snapshot
                     selection = self.timeline.selection if self.timeline else None
                     note = "Starting source for this timeline"
                 else:
-                    view = await asyncio.to_thread(self.repository.historical_source, entry, mode == "before")
+                    view = await asyncio.to_thread(trace_repository.historical_source, entry, mode == "before")
                     snapshot, selection, note = view.snapshot, view.selection, view.note
-                details = await asyncio.to_thread(self.repository.details, entry.commit)
-                repository = await asyncio.to_thread(self.repository.at, snapshot.commit) if snapshot else self.repository
+                details = await asyncio.to_thread(trace_repository.details, entry.commit)
+                repository = await asyncio.to_thread(trace_repository.at, snapshot.commit) if snapshot else trace_repository
         except TrailError as error:
             if generation == self._view_generation:
                 self.snapshot = None
@@ -1303,12 +1332,15 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         context.append(f"{entry.author}\n", style=self.palette.commit_foreground)
         context.append(f"Committed  {entry.committed_at}\nAuthored   {entry.authored_at}\n\n", style=self.palette.commit_muted)
         context.append(details.message + "\n\n")
-        context.append(f"CHANGED FILES  {len(details.files)}\n", style="bold " + self.palette.heading)
+        scope = " (ALL PARENTS)" if len(entry.parents) > 1 else ""
+        context.append(f"CHANGED FILES{scope}  {len(details.files)}\n", style="bold " + self.palette.heading)
         for path in details.files:
             context.append(f"  {path}\n")
         if len(entry.parents) > 1:
             context.append("\nMerge commit. Files include changes against all parents.\n", style=self.palette.commit_muted)
-        if self.timeline and self.timeline.mode == "symbol":
+        if self.comparison:
+            context.append("\n" + self.comparison.note + "\n", style=self.palette.commit_muted)
+        elif self.timeline and self.timeline.mode == "symbol":
             context.append("\nSYMBOL TRACKING\n" + entry.tracking_note + "\n\n" + "\n".join(self.timeline.warnings))
         self.query_one("#commit-details", Static).update(context)
 
@@ -1347,19 +1379,20 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         self.refresh_search()
 
     def position_diff(self) -> None:
-        if self.selected_entry is None:
+        if self.review_entry is None:
             return
         self.refresh_diff_layout()
         if not self._diff_active:
             self.query_one("#diff-scroll", VerticalScroll).scroll_to(y=0, animate=False, immediate=True)
 
     def render_diff(self) -> None:
-        if self.selected_entry is None:
+        entry = self.review_entry
+        if entry is None:
             return
-        key = self.selected_entry.commit, self.selected_entry.patch
+        key = entry.commit, entry.patch, self.comparison.parent_commit if self.comparison else ""
         if key != self._diff_key:
             self._diff_key = key
-            self._diff_patch = DiffPatch.parse(self.selected_entry.patch)
+            self._diff_patch = DiffPatch.parse(entry.patch)
             targets = self._diff_patch.change_targets()
             self._diff_cursor = targets[0] if targets else None
             self._diff_active = False
@@ -1377,13 +1410,13 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         compact = self.default_screen.has_class("compact")
         if self.diff_effective_layout == "split":
             rendered, rows, self._diff_separator = self._diff_patch.side_by_side(
-                self.selected_entry.old_path, self.selected_entry.new_path, width, active,
+                entry.old_path, entry.new_path, width, active,
                 compact=compact, palette=self.palette,
             )
             self._diff_rows = (SplitRow(), *rows)
             self.query_one("#diff", Static).update(rendered)
             return
-        patch = display_source(self.selected_entry.patch)
+        patch = display_source(entry.patch)
         offset = 0
         if compact:
             if self._diff_patch.hunks:
@@ -1407,11 +1440,19 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     def diff_layout_pressed(self) -> None:
         self.set_diff_layout("unified" if self.diff_layout == "split" else "split")
 
+    @on(Button.Pressed, "#merge-parent")
+    def parent_pressed(self) -> None:
+        self.action_parents()
+
     @on(Button.Pressed, "#view-after, #view-before, #view-starting")
     def source_view_pressed(self, event: Button.Pressed) -> None:
         self.set_source_mode(event.button.id.removeprefix("view-"))
 
     def set_source_mode(self, mode: str) -> None:
+        if self.comparison is not None:
+            self.set_comparison_mode(mode)
+            return
+        self.cancel_merge_requests()
         if self.selected_entry is None and mode != "after":
             self.status("Trace a selection before choosing a historical source view.")
             return
@@ -1433,9 +1474,9 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         tabs.active = "diff-tab" if tabs.active == "commit-tab" else "commit-tab"
 
     def action_copy_sha(self) -> None:
-        if self.selected_entry:
-            self.copy_to_clipboard(self.selected_entry.commit)
-            self.status(f"Copied commit {self.selected_entry.commit[:10]} (terminal clipboard support required).")
+        if self.review_entry:
+            self.copy_to_clipboard(self.review_entry.commit)
+            self.status(f"Copied commit {self.review_entry.commit[:10]} (terminal clipboard support required).")
 
     def action_find_history(self) -> None:
         self.open_prompt("#history-filter")
@@ -1502,12 +1543,26 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.action_close_find()
             self.status(f"Normal-mode mapping {name} updated. Saved on exit.")
             return
+        if name == "parent":
+            try:
+                parent = self.parent_argument(argument) if argument else None
+            except TrailError as error:
+                self.status(str(error), error=True)
+                return
+            self.close_merge_prompt()
+            if parent is not None:
+                self.call_after_refresh(self.choose_parent, parent)
+            else:
+                self.call_after_refresh(self.action_parents)
+            return
         settings = {"ignorecase": ("#find-case", False), "noignorecase": ("#find-case", True),
                     "regex": ("#find-regex", True), "noregex": ("#find-regex", False)}
         actions = {
             "help": self.action_help, "symbols": self.action_browse_symbols,
             "path": self.action_path,
             "theme": self.action_theme,
+            "merges": self.action_merges, "parents": self.action_parents,
+            "nextparent": self.action_nextparent, "prevparent": self.action_prevparent,
             "maps": self.action_help,
             "follow": self.action_follow,
             "back": self.action_back, "forward": self.action_forward,
@@ -1552,8 +1607,11 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         if argument and name not in ("file", "files", "filter", "set", "theme"):
             self.status(f":{name} takes no argument.", error=True)
             return
-        self.close_prompt()
-        self.query_one("#source" if self.snapshot else "#files").focus()
+        if name in ("merges", "parents", "nextparent", "prevparent"):
+            self.close_merge_prompt()
+        else:
+            self.close_prompt()
+            self.query_one("#source" if self.snapshot else "#files").focus()
         if line is not None:
             self.jump_to(line)
         elif name in ("q", "quit"):
@@ -1573,7 +1631,8 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.query_one("#history-filter", Input).value = argument
             self.query_one("#timeline", OptionList).focus()
         else:
-            if name in ("nextchange", "prevchange", "diffsource", "diffbefore", "diffafter"):
+            if name in ("nextchange", "prevchange", "diffsource", "diffbefore", "diffafter",
+                        "merges", "parents", "nextparent", "prevparent", "before", "after", "starting"):
                 self.call_after_refresh(actions[name])
             else:
                 actions[name]()
