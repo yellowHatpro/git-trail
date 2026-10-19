@@ -7,6 +7,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .merge import CommitMetadata, MergeList, ParentComparison
 
 
 class TrailError(Exception):
@@ -323,6 +327,30 @@ class Repository:
     def symbol_history(self, snapshot: Snapshot, selection: LineRange, *, cancel=None) -> Timeline:
         from .tracking import follow_symbol
         return follow_symbol(self, snapshot, selection, cancel=cancel)
+
+    def commit_metadata(self, commit: str | None = None) -> CommitMetadata:
+        from .merge import commit_metadata
+        return commit_metadata(self, self.commit if commit is None else commit)
+
+    def reachable_merges(self, limit: int = 100, *, commit: str | None = None) -> MergeList:
+        from .merge import reachable_merges
+        return reachable_merges(self, self.commit if commit is None else commit, limit)
+
+    def parent_comparison(self, commit: str, path: str, parent: int | str = 1) -> ParentComparison:
+        from .merge import parent_comparison
+        return parent_comparison(self, commit, path, parent)
+
+    def parent_source(self, comparison: ParentComparison, before: bool = False) -> HistoryView:
+        from .merge import parent_source
+        return parent_source(self, comparison, before)
+
+    def parent_diff_source(self, comparison: ParentComparison, line: int, before: bool = False) -> HistoryView:
+        from .merge import parent_diff_source
+        return parent_diff_source(self, comparison, line, before)
+
+    def canonical_at(self, commit: str) -> Repository:
+        from .merge import canonical_at
+        return canonical_at(self, commit)
 
 
 def parse_history(output: bytes) -> tuple[HistoryEntry, ...]:
