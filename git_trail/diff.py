@@ -7,6 +7,7 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from .git import display_source
+from .theme import DEFAULT_PALETTE, Palette
 
 HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -138,7 +139,7 @@ class DiffPatch:
         flush()
         return tuple(rows)
 
-    def side_by_side(self, old_path: str, new_path: str, width: int, active: int | None = None, *, compact: bool = False) -> tuple[Text, tuple[SplitRow, ...], int]:
+    def side_by_side(self, old_path: str, new_path: str, width: int, active: int | None = None, *, compact: bool = False, palette: Palette = DEFAULT_PALETTE) -> tuple[Text, tuple[SplitRow, ...], int]:
         rows = self.split_rows()
         if compact and self.hunks:
             rows = tuple(row for row in rows if any(index >= self.hunks[0].header for index in row.indices))
@@ -157,23 +158,23 @@ class DiffPatch:
         left_width = max((width - 3) // 2, cell_len(old_label),
                          max((cell_len(cell(row.old, True)) for row in rows if row.heading is None), default=0))
         result = Text(no_wrap=True, overflow="ignore")
-        result.append(old_label + " " * max(0, left_width - cell_len(old_label)) + " │ " + new_label + "\n", style="#7aa2f7")
+        result.append(old_label + " " * max(0, left_width - cell_len(old_label)) + " │ " + new_label + "\n", style=palette.accent)
         for row in rows:
             highlighted = active is not None and active in row.indices
             if row.heading is not None:
-                result.append(display_source(self.lines[row.heading].text), style="#7aa2f7" if self.lines[row.heading].kind == "hunk" else "#565f89")
+                result.append(display_source(self.lines[row.heading].text), style=palette.accent if self.lines[row.heading].kind == "hunk" else palette.muted)
             else:
                 left = cell(row.old, True)
-                result.append(left, style=self.color(row.old))
-                result.append(" " * max(0, left_width - cell_len(left)) + " │ ", style="#3b4261")
-                result.append(cell(row.new, False), style=self.color(row.new))
+                result.append(left, style=self.color(row.old, palette))
+                result.append(" " * max(0, left_width - cell_len(left)) + " │ ", style=palette.border)
+                result.append(cell(row.new, False), style=self.color(row.new, palette))
             result.append("\n")
             if highlighted:
                 start = result.plain.rfind("\n", 0, len(result) - 1) + 1
-                result.stylize("on #283457", start, len(result) - 1)
+                result.stylize("on " + palette.selection, start, len(result) - 1)
         return result, rows, left_width + 1
 
-    def color(self, index: int | None) -> str:
+    def color(self, index: int | None, palette: Palette = DEFAULT_PALETTE) -> str:
         if index is None:
-            return "#565f89"
-        return {"add": "#9ece6a", "delete": "#f7768e"}.get(self.lines[index].kind, "#c0caf5")
+            return palette.muted
+        return {"add": palette.green, "delete": palette.red}.get(self.lines[index].kind, palette.foreground)

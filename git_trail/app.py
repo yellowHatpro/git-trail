@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from importlib.resources import files as resource_files
 from pathlib import PurePosixPath
 
-from pygments.style import Style as PygmentsStyle
-from pygments.token import Generic, Token
-from rich.syntax import PygmentsSyntaxTheme, Syntax
+from rich.syntax import Syntax
 from rich.text import Text
 from textual import events, on
 from textual.app import App, ComposeResult
@@ -21,9 +19,9 @@ from tree_sitter import QueryError
 from tree_sitter_language_pack import get_language
 
 from .filters import HistoryFilter, filter_files, find_matches
-from .git import HistoryEntry, LineRange, Repository, Snapshot, Timeline, TrailError, display_source
+from .git import CommitDetails, HistoryEntry, LineRange, Repository, Snapshot, Timeline, TrailError, display_source
 from .selectors import enclosing_symbol, paragraph, symbols
-from .theme import BACKGROUND, EDITOR_THEME
+from .theme import BACKGROUND, DIFF_THEME, DiffStyle, EDITOR_THEME, DEFAULT_PALETTE, PALETTES, theme_name
 from .state import DEFAULTS, NORMAL_ACTIONS, StateStore, validate_mapping
 from .navigation import NavigationSupport, Visit, bookmark_name
 from .diff import DiffPatch, SplitRow
@@ -31,20 +29,6 @@ from .diff_navigation import DiffNavigationSupport
 from .explorer import FileExplorer, display_path
 from .vim import VimCursor
 from .widgets import DiffContent, DiffScroll, PaneDivider
-
-
-class DiffStyle(PygmentsStyle):
-    background_color = BACKGROUND
-    styles = {
-        Token: "#c0caf5",
-        Generic.Deleted: "#f7768e",
-        Generic.Inserted: "#9ece6a",
-        Generic.Heading: "#565f89",
-        Generic.Subheading: "#7aa2f7",
-    }
-
-
-DIFF_THEME = PygmentsSyntaxTheme(DiffStyle)
 
 
 class SourceView(TextArea):
@@ -58,8 +42,9 @@ class SourceView(TextArea):
         self.vim = VimCursor()
         kwargs["theme"] = "css"
         super().__init__(*args, **kwargs)
-        self.register_theme(EDITOR_THEME)
-        self.theme = EDITOR_THEME.name
+        for palette in PALETTES.values():
+            self.register_theme(palette.editor_theme())
+        self.theme = DEFAULT_PALETTE.editor_name
 
     def load_text(self, text: str) -> None:
         self.vim.reset()
@@ -141,9 +126,81 @@ class PathScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="help-dialog"):
-            yield Static("REPOSITORY PATH")
+            yield Static("REPOSITORY PATH", classes="dialog-title")
             yield Static(Text(display_path(self.path)), markup=False)
             yield Static("\nEnter / Escape closes")
+
+
+class ThemeScreen(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+n,down", "next_theme", "Next", show=False, priority=True),
+        Binding("ctrl+p,up", "previous_theme", "Previous", show=False, priority=True),
+    ]
+
+    def __init__(self, current: str):
+        super().__init__()
+        self.current = current
+        self.names = tuple(PALETTES)
+        self.filtered_names = self.names
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="theme-dialog"):
+            yield Static("THEME", classes="dialog-title")
+            yield Input(placeholder="Tokyo Night · Catppuccin · Gruvbox", id="theme-filter")
+            yield OptionList(id="theme-options", markup=False)
+            yield Static("Ctrl+N/P or Up/Down · Enter / click selects · Escape cancels")
+
+    def on_mount(self) -> None:
+        self.filter_themes("")
+        options = self.query_one("#theme-options", OptionList)
+        options.highlighted = self.names.index(self.current)
+        self.query_one("#theme-filter", Input).focus()
+
+    def filter_themes(self, query: str) -> None:
+        word = query.casefold().replace("é", "e").replace("-", " ").strip()
+        exact = theme_name(query)
+        self.filtered_names = tuple(
+            name for name in self.names
+            if not word or name == exact or word in (
+                PALETTES[name].label + (" dark" if PALETTES[name].dark else " light")
+            ).casefold().replace("é", "e")
+        )
+        options = self.query_one("#theme-options", OptionList)
+        options.set_options(
+            Option(Text(PALETTES[name].label + ("  ·  light" if not PALETTES[name].dark else ""), no_wrap=True), id=name)
+            for name in self.filtered_names
+        )
+        options.highlighted = 0 if self.filtered_names else None
+
+    @on(Input.Changed, "#theme-filter")
+    def filter_changed(self, event: Input.Changed) -> None:
+        self.filter_themes(event.value)
+
+    @on(Input.Submitted, "#theme-filter")
+    def submitted(self) -> None:
+        options = self.query_one("#theme-options", OptionList)
+        if options.highlighted is not None:
+            self.dismiss(options.get_option_at_index(options.highlighted).id)
+
+    @on(OptionList.OptionSelected, "#theme-options")
+    def selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_next_theme(self) -> None:
+        self.query_one("#theme-options", OptionList).action_cursor_down()
+
+    def action_previous_theme(self) -> None:
+        self.query_one("#theme-options", OptionList).action_cursor_up()
+
+    def on_key(self, event: events.Key) -> None:
+        if isinstance(self.focused, OptionList) and event.key in ("j", "k"):
+            self.action_next_theme() if event.key == "j" else self.action_previous_theme()
+            event.prevent_default()
+            event.stop()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class SymbolScreen(ModalScreen[LineRange | None]):
@@ -228,10 +285,11 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="help-dialog"):
+            yield Static("GIT TRAIL  /  KEYBOARD & FILTERS", classes="dialog-title")
             if self.mappings:
                 yield Static(Text("CUSTOM NORMAL KEYS\n" + "\n".join(f"{key}  {action}" for key, action in self.mappings.items()) + "\n"))
             yield Static(Text.from_markup(
-                "[bold #a5b4fc]GIT TRAIL  /  KEYBOARD & FILTERS[/]\n\n"
+                "\n"
                 "[bold]Normal / Visual[/]\n"
                 "h j k l  Move      w / b  Words      0 / $  Line ends\n"
                 "gg / G  First / last line     3j / 42gg  Counts\n"
@@ -245,6 +303,7 @@ class HelpScreen(ModalScreen):
                 ":before / :after / :starting     :diff / :commit\n"
                 ":file ext:py     :filter author:Jane     :symbols\n"
                 ":path  Inspect the selected file or folder path\n"
+                ":theme  Choose colors     :theme latte / gruvbox-light\n"
                 ":follow  Track a whole symbol through refactors\n"
                 ":bookmark NAME / :open NAME / :unbookmark NAME\n"
                 ":back / :forward / :bookmarks     Alt+Left / Alt+Right\n"
@@ -356,88 +415,91 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
     SUB_TITLE = "Source · History · Context"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
-    Screen { background: #1a1b26; color: #c0caf5; }
+    Screen { background: $trail-background; color: $trail-foreground; }
     * {
-        scrollbar-background: #16161e; scrollbar-background-hover: #16161e;
-        scrollbar-background-active: #16161e; scrollbar-color: #3b4261;
-        scrollbar-color-hover: #565f89; scrollbar-color-active: #7aa2f7;
-        scrollbar-corner-color: #1a1b26; scrollbar-size-horizontal: 1;
+        scrollbar-background: $trail-sidebar; scrollbar-background-hover: $trail-sidebar;
+        scrollbar-background-active: $trail-sidebar; scrollbar-color: $trail-border;
+        scrollbar-color-hover: $trail-muted; scrollbar-color-active: $trail-accent;
+        scrollbar-corner-color: $trail-background; scrollbar-size-horizontal: 1;
     }
-    #workspace-title { height: 1; padding: 0 1; background: #16161e; color: #7aa2f7; text-style: bold; }
+    #workspace-title { height: 1; padding: 0 1; background: $trail-sidebar; color: $trail-accent; text-style: bold; }
     #body { height: 1fr; }
-    #files-pane { width: 24; min-width: 16; background: #16161e; }
-    #sidebar-divider { width: 1; color: #292e42; }
-    #sidebar-divider:hover, #sidebar-divider:focus { color: #7aa2f7; }
+    #files-pane { width: 24; min-width: 16; background: $trail-sidebar; }
+    #sidebar-divider { width: 1; color: $trail-divider; }
+    #sidebar-divider:hover, #sidebar-divider:focus { color: $trail-accent; }
     #files-title, #source-title, #timeline-title, #diff-title {
-        height: 1; padding: 0 1; color: #a9b1d6; background: #24283b; text-wrap: nowrap; text-overflow: ellipsis;
+        height: 1; padding: 0 1; color: $trail-subtext; background: $trail-surface; text-wrap: nowrap; text-overflow: ellipsis;
     }
     #files-pane:focus-within #files-title, #source-pane:focus-within #source-title,
-    #timeline-pane:focus-within #timeline-title, #diff-pane:focus-within #diff-title { color: #7aa2f7; }
-    Input, Input:focus { height: 1; border: none; padding: 0; background: #16161e; color: #c0caf5; }
-    Input > .input--placeholder { color: #565f89; }
-    Input > .input--cursor { background: #c0caf5; color: #1a1b26; }
-    #files { height: 1fr; min-height: 0; max-height: 100%; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: #16161e; padding: 0 1; text-wrap: nowrap; text-overflow: ellipsis; }
-    OptionList > .option-list--option-highlighted { background: #24283b; color: #c0caf5; }
-    OptionList:focus > .option-list--option-highlighted { background: #283457; color: #7aa2f7; }
-    OptionList > .option-list--option-hover { background: #24283b; }
+    #timeline-pane:focus-within #timeline-title, #diff-pane:focus-within #diff-title { color: $trail-accent; }
+    Input, Input:focus { height: 1; border: none; padding: 0; background: $trail-sidebar; color: $trail-foreground; }
+    Input > .input--placeholder { color: $trail-muted; }
+    Input > .input--cursor { background: $trail-foreground; color: $trail-background; }
+    #files { height: 1fr; min-height: 0; max-height: 100%; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: $trail-sidebar; padding: 0 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    OptionList > .option-list--option-highlighted { background: $trail-surface; color: $trail-foreground; }
+    OptionList:focus > .option-list--option-highlighted { background: $trail-selection; color: $trail-accent; }
+    OptionList > .option-list--option-hover { background: $trail-surface; }
     #workspace { width: 1fr; }
-    #source-pane { height: 3fr; min-height: 6; background: #1a1b26; }
-    #source-heading { height: 1; background: #24283b; }
+    #source-pane { height: 3fr; min-height: 6; background: $trail-background; }
+    #source-heading { height: 1; background: $trail-surface; }
     #source-title { width: 1fr; }
     #source-toolbar { height: 1; width: 26; }
-    #source-toolbar Button { height: 1; min-width: 6; width: auto; padding: 0 1; border: none; background: #24283b; color: #565f89; }
-    #source-toolbar Button.active { color: #7aa2f7; text-style: bold; }
-    #source-note { display: none; height: 1; color: #e0af68; padding: 0 1; }
+    #source-toolbar Button { height: 1; min-width: 6; width: auto; padding: 0 1; border: none; background: $trail-surface; color: $trail-muted; }
+    #source-toolbar Button.active { color: $trail-accent; text-style: bold; }
+    #source-note { display: none; height: 1; color: $trail-yellow; padding: 0 1; }
     #source-note.important { display: block; }
-    #source { height: 1fr; min-height: 0; border: none; background: #1a1b26; scrollbar-size-vertical: 1; }
+    #source { height: 1fr; min-height: 0; border: none; background: $trail-background; scrollbar-size-vertical: 1; }
     #source:focus { border: none; }
-    #prompt-row { height: 1; background: #16161e; padding: 0 1; }
-    #prompt-label { height: 1; width: auto; min-width: 2; color: #7aa2f7; }
+    #prompt-row { height: 1; background: $trail-sidebar; padding: 0 1; }
+    #prompt-label { height: 1; width: auto; min-width: 2; color: $trail-accent; }
     #file-filter, #history-filter, #command-input { height: 1; width: 1fr; }
     #find-bar { height: 1; width: 1fr; }
     #find-input { width: 1fr; }
-    #find-bar Button { min-width: 3; width: 3; height: 1; padding: 0; border: none; background: #16161e; color: #7aa2f7; }
-    #find-bar Checkbox { width: 8; min-width: 8; height: 1; padding: 0; border: none; background: #16161e; }
-    #find-count { width: 9; content-align: center middle; color: #a5b4fc; }
+    #find-bar Button { min-width: 3; width: 3; height: 1; padding: 0; border: none; background: $trail-sidebar; color: $trail-accent; }
+    #find-bar Checkbox { width: 8; min-width: 8; height: 1; padding: 0; border: none; background: $trail-sidebar; }
+    #find-count { width: 9; content-align: center middle; color: $trail-heading; }
     #find-case, #find-regex, #find-next, #find-previous { display: none; }
-    #history-pane { height: 2fr; min-height: 6; border-top: solid #292e42; }
-    #timeline-pane { width: 34%; min-width: 22; background: #1a1b26; border-right: solid #292e42; }
-    #timeline { height: 1fr; min-height: 0; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: #1a1b26; padding: 0 1; }
+    #history-pane { height: 2fr; min-height: 6; border-top: solid $trail-divider; }
+    #timeline-pane { width: 34%; min-width: 22; background: $trail-background; border-right: solid $trail-divider; }
+    #timeline { height: 1fr; min-height: 0; overflow-y: auto; scrollbar-size-vertical: 1; border: none; background: $trail-background; padding: 0 1; }
     #diff-pane { width: 1fr; }
-    #diff-heading { height: 1; background: #24283b; }
+    #diff-heading { height: 1; background: $trail-surface; }
     #diff-title { width: 1fr; }
-    #diff-layout { height: 1; width: 11; min-width: 11; border: none; padding: 0 1; background: #24283b; color: #7aa2f7; }
-    #review-tabs { height: 1fr; background: #1a1b26; }
+    #diff-layout { height: 1; width: 11; min-width: 11; border: none; padding: 0 1; background: $trail-surface; color: $trail-accent; }
+    #review-tabs { height: 1fr; background: $trail-background; }
     TabPane { padding: 0; }
     ContentSwitcher { height: 1fr; }
-    Tabs { height: 1; background: #24283b; }
+    Tabs { height: 1; background: $trail-surface; }
     Tabs > .tabs-list { height: 1; }
-    Tab { padding: 0 1; height: 1; color: #565f89; }
-    Tab.-active { color: #7aa2f7; background: #24283b; }
+    Tab { padding: 0 1; height: 1; color: $trail-muted; }
+    Tab.-active { color: $trail-accent; background: $trail-surface; }
     Underline { display: none; }
     #diff-scroll, #commit-scroll { height: 1fr; padding: 0 1; overflow-x: auto; scrollbar-size-vertical: 1; }
     #diff { width: auto; min-width: 100%; height: auto; }
     #commit-details { height: auto; }
-    #statusline { height: 1; background: #24283b; }
-    #mode { width: 9; content-align: center middle; background: #7aa2f7; color: #1a1b26; text-style: bold; }
-    #mode.visual { background: #bb9af7; }
-    #mode.prompt { background: #9ece6a; }
-    #status { height: 1; width: 1fr; padding: 0 1; color: #a9b1d6; text-wrap: nowrap; text-overflow: ellipsis; }
-    #position { width: 14; height: 1; color: #565f89; content-align: right middle; padding: 0 1; }
-    JumpScreen, SymbolScreen, BookmarkScreen, HelpScreen, PathScreen { align: center middle; background: #000000 65%; }
+    #statusline { height: 1; background: $trail-surface; }
+    #mode { width: 9; content-align: center middle; background: $trail-accent; color: $trail-background; text-style: bold; }
+    #mode.visual { background: $trail-purple; }
+    #mode.prompt { background: $trail-green; }
+    #status { height: 1; width: 1fr; padding: 0 1; color: $trail-subtext; text-wrap: nowrap; text-overflow: ellipsis; }
+    #position { width: 14; height: 1; color: $trail-muted; content-align: right middle; padding: 0 1; }
+    JumpScreen, SymbolScreen, BookmarkScreen, HelpScreen, PathScreen, ThemeScreen { align: center middle; background: $trail-overlay 65%; }
+    .dialog-title { color: $trail-heading; text-style: bold; }
     #jump-dialog {
-        width: 54; height: auto; padding: 1 2; border: round #3b4261;
-        background: #16161e;
+        width: 54; height: auto; padding: 1 2; border: round $trail-border;
+        background: $trail-sidebar;
     }
     #jump-input { margin: 1 0; }
     #jump-message { height: auto; }
     #symbol-dialog {
         width: 80%; max-width: 100; height: 75%; padding: 1 2;
-        border: round #3b4261; background: #16161e;
+        border: round $trail-border; background: $trail-sidebar;
     }
     #symbol-filter { height: 1; }
     #symbol-options { height: 1fr; margin: 1 0; }
-    #help-dialog { width: 80; max-width: 95%; height: auto; max-height: 90%; padding: 1 3; border: round #3b4261; background: #16161e; }
+    #help-dialog { width: 80; max-width: 95%; height: auto; max-height: 90%; padding: 1 3; border: round $trail-border; background: $trail-sidebar; }
+    #theme-dialog { width: 62; max-width: 95%; height: auto; max-height: 90%; padding: 1 2; border: round $trail-border; background: $trail-sidebar; }
+    #theme-options { height: 7; min-height: 3; border: none; padding: 0; margin: 1 0; background: $trail-sidebar; }
     Screen.compact #timeline { text-wrap: nowrap; text-overflow: ellipsis; }
     """
     BINDINGS = [
@@ -471,8 +533,18 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         Binding("alt+right", "forward", "Next visit", priority=True),
     ]
 
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        return DEFAULT_PALETTE.app_theme().variables
+
     def __init__(self, repository: Repository, initial: InitialSelection | None = None, *, store: StateStore | None = None):
         super().__init__()
+        self.palette = DEFAULT_PALETTE
+        self.diff_theme = self.palette.diff_theme()
+        for palette in PALETTES.values():
+            self.register_theme(palette.app_theme())
+        self.theme = self.palette.name
+        self._status_message = ("Reading repository…", False)
+        self._commit_context: tuple[HistoryEntry, CommitDetails] | None = None
         self.repository = repository
         self.initial = initial or InitialSelection()
         self.snapshot: Snapshot | None = None
@@ -583,6 +655,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             state_warning = state_warning or self.store.warning
         self.sidebar_width = self.preferences["sidebar_width"]
         self._sidebar_visible = self.preferences["sidebar_visible"]
+        self.apply_theme(theme_name(self.preferences.get("theme")) or DEFAULT_PALETTE.name, persist=False)
         self.query_one("#files-pane").display = self._sidebar_visible
         self.query_one("#sidebar-divider").display = self._sidebar_visible
         self.query_one("#find-case", Checkbox).value = self.preferences["find_case"]
@@ -590,7 +663,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         self.close_prompt()
         self.query_one("#diff-layout", Button).active_effect_duration = 0
         self.resize_sidebar(self.sidebar_width)
-        self.screen.set_class(self.size.width < 100 or self.size.height < 30, "compact")
+        self.default_screen.set_class(self.size.width < 100 or self.size.height < 30, "compact")
         self.sub_title = f"{self.repository.root.name} · {self.repository.commit[:10]}"
         try:
             self.all_files = await asyncio.to_thread(self.repository.files)
@@ -629,11 +702,38 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
                     self.navigation_data["sessions"][self.repository_key] = visit.to_dict()
                 self.store.save()
             except TrailError as error:
-                message = Text(str(error), style="#f7768e")
+                message = Text(str(error), style=self.palette.red)
         super().exit(result, return_code, message)
 
     def status(self, message: str, error: bool = False) -> None:
-        self.query_one("#status", Static).update(Text(message, style="#f49b9b" if error else "#9cafbf"))
+        self._status_message = message, error
+        self.query_one("#status", Static).update(Text(message, style=self.palette.error if error else self.palette.status))
+
+    def apply_theme(self, name: str, *, persist: bool = True) -> bool:
+        canonical = theme_name(name)
+        if canonical is None:
+            if self.is_mounted:
+                self.status("Unknown theme. Use :theme to choose colors.", error=True)
+            return False
+        self.palette = PALETTES[canonical]
+        self.diff_theme = self.palette.diff_theme()
+        self.theme = canonical
+        if persist:
+            self.preferences["theme"] = canonical
+        sources = list(self.query("#source"))
+        if sources:
+            sources[0].theme = self.palette.editor_name
+            self.status(*self._status_message)
+            self.render_diff()
+            context = self.query_one("#commit-details", Static)
+            if self._commit_context and self._commit_context[0] == self.selected_entry and isinstance(context.content, Text):
+                self.render_commit_context(*self._commit_context)
+        return True
+
+    def watch_theme(self, name: str) -> None:
+        palette = getattr(self, "palette", None)
+        if name in PALETTES and palette is not None and palette.name != name:
+            self.apply_theme(name)
 
     def set_editor_mode(self, mode: str) -> None:
         if self.query_one("#prompt-row").display:
@@ -1183,19 +1283,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.query_one("#source-note", Static).update(Text(note or "Symbol history uses first parents."))
         self.query_one("#source-note", Static).set_class(bool(note), "important")
         self.refresh_search()
-        context = Text()
-        context.append(f"{entry.commit}\n", style="bold #a5b4fc")
-        context.append(f"{entry.author}\n", style="#e2e8f0")
-        context.append(f"Committed  {entry.committed_at}\nAuthored   {entry.authored_at}\n\n", style="#94a3b8")
-        context.append(details.message + "\n\n")
-        context.append(f"CHANGED FILES  {len(details.files)}\n", style="bold #a5b4fc")
-        for path in details.files:
-            context.append(f"  {path}\n")
-        if len(entry.parents) > 1:
-            context.append("\nMerge commit. Files include changes against all parents.\n", style="#94a3b8")
-        if self.timeline and self.timeline.mode == "symbol":
-            context.append("\nSYMBOL TRACKING\n" + entry.tracking_note + "\n\n" + "\n".join(self.timeline.warnings))
-        self.query_one("#commit-details", Static).update(context)
+        self.render_commit_context(entry, details)
         self.status(
             f"{len(self.timeline.entries)} changes · {mode.capitalize()} {entry.commit[:8]} · Ctrl+J/K navigate · F1 help"
             + (" · local edits excluded" if self.traced_snapshot and self.traced_snapshot.working_tree_changed else "")
@@ -1205,6 +1293,22 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             self.status(partial[-1], error=True)
         self._navigation_ready = True
         self.record_visit()
+
+    def render_commit_context(self, entry: HistoryEntry, details: CommitDetails) -> None:
+        self._commit_context = entry, details
+        context = Text()
+        context.append(f"{entry.commit}\n", style="bold " + self.palette.heading)
+        context.append(f"{entry.author}\n", style=self.palette.commit_foreground)
+        context.append(f"Committed  {entry.committed_at}\nAuthored   {entry.authored_at}\n\n", style=self.palette.commit_muted)
+        context.append(details.message + "\n\n")
+        context.append(f"CHANGED FILES  {len(details.files)}\n", style="bold " + self.palette.heading)
+        for path in details.files:
+            context.append(f"  {path}\n")
+        if len(entry.parents) > 1:
+            context.append("\nMerge commit. Files include changes against all parents.\n", style=self.palette.commit_muted)
+        if self.timeline and self.timeline.mode == "symbol":
+            context.append("\nSYMBOL TRACKING\n" + entry.tracking_note + "\n\n" + "\n".join(self.timeline.warnings))
+        self.query_one("#commit-details", Static).update(context)
 
     def navigate(self, offset: int) -> None:
         options = self.query_one("#timeline", OptionList)
@@ -1268,24 +1372,25 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         if old_layout != self.diff_effective_layout and self.diff_layout == "split":
             self.status("Side-by-side diff" if self.diff_effective_layout == "split" else "Unified diff (side-by-side needs 60 diff columns)")
         active = self._diff_cursor if self._diff_active else None
+        compact = self.default_screen.has_class("compact")
         if self.diff_effective_layout == "split":
             rendered, rows, self._diff_separator = self._diff_patch.side_by_side(
                 self.selected_entry.old_path, self.selected_entry.new_path, width, active,
-                compact=self.screen.has_class("compact"),
+                compact=compact, palette=self.palette,
             )
             self._diff_rows = (SplitRow(), *rows)
             self.query_one("#diff", Static).update(rendered)
             return
         patch = display_source(self.selected_entry.patch)
         offset = 0
-        if self.screen.has_class("compact"):
+        if compact:
             if self._diff_patch.hunks:
                 offset = self._diff_patch.hunks[0].header
                 patch = "\n".join(patch.split("\n")[offset:])
         self._diff_rows = tuple(SplitRow(heading=index) for index in range(offset, len(self._diff_patch.lines)))
-        syntax = Syntax(patch, "diff", theme=DIFF_THEME, word_wrap=False, background_color=BACKGROUND)
+        syntax = Syntax(patch, "diff", theme=self.diff_theme, word_wrap=False, background_color=self.palette.background)
         if active is not None and active >= offset:
-            syntax.stylize_range("on #283457", (active - offset + 1, 0), (active - offset + 2, 0))
+            syntax.stylize_range("on " + self.palette.selection, (active - offset + 1, 0), (active - offset + 2, 0))
         self.query_one("#diff", Static).update(syntax)
 
     def set_diff_layout(self, layout: str) -> None:
@@ -1349,6 +1454,19 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             return
         self.push_screen(PathScreen(path))
 
+    def action_theme(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        def selected(name: str | None) -> None:
+            if name is not None and self.apply_theme(name):
+                self.status(f"Theme: {self.palette.label}. Saved on exit.")
+
+        self.push_screen(ThemeScreen(self.palette.name), selected)
+
+    def action_change_theme(self) -> None:
+        self.action_theme()
+
     @on(Input.Submitted, "#command-input")
     def command_submitted(self, event: Input.Submitted) -> None:
         value = event.value.strip().removeprefix(":").strip()
@@ -1387,6 +1505,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         actions = {
             "help": self.action_help, "symbols": self.action_browse_symbols,
             "path": self.action_path,
+            "theme": self.action_theme,
             "maps": self.action_help,
             "follow": self.action_follow,
             "back": self.action_back, "forward": self.action_forward,
@@ -1414,6 +1533,9 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             except TrailError as error:
                 self.status(str(error), error=True)
                 return
+        if name == "theme" and argument and theme_name(argument) is None:
+            self.status("Unknown theme. Use :theme to choose colors.", error=True)
+            return
         numeric = name.isascii() and name.isdecimal() and not argument
         if numeric and len(name) > 9:
             self.status("Line number is too large.", error=True)
@@ -1425,7 +1547,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
         if line is None and name not in (*actions, "q", "quit", "set", "file", "files", "filter"):
             self.status(f"Unknown command: {value or '(empty)'}. Use :help.", error=True)
             return
-        if argument and name not in ("file", "files", "filter", "set"):
+        if argument and name not in ("file", "files", "filter", "set", "theme"):
             self.status(f":{name} takes no argument.", error=True)
             return
         self.close_prompt()
@@ -1438,6 +1560,9 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
             selector, enabled = settings[argument]
             self.query_one(selector, Checkbox).value = enabled
             self.status(f"Search: {argument}")
+        elif name == "theme" and argument:
+            self.apply_theme(argument)
+            self.status(f"Theme: {self.palette.label}. Saved on exit.")
         elif name in ("file", "files"):
             self.action_find_file()
             if argument:
@@ -1568,7 +1693,7 @@ class TrailApp(DiffNavigationSupport, NavigationSupport, App):
 
     def on_resize(self, event: events.Resize) -> None:
         if self.is_mounted:
-            self.screen.set_class(event.size.width < 100 or event.size.height < 30, "compact")
+            self.default_screen.set_class(event.size.width < 100 or event.size.height < 30, "compact")
             self.resize_sidebar(self.sidebar_width, available=event.size.width)
             self.call_after_refresh(self.position_diff)
 

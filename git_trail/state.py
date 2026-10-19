@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from .git import TrailError
+from .theme import theme_name
 
 DEFAULTS = {
     "sidebar_width": 24, "sidebar_visible": True,
@@ -15,6 +16,7 @@ NORMAL_ACTIONS = {
     "files": "find_file", "find": "find_code", "symbols": "browse_symbols",
     "filter": "find_history", "follow": "follow", "help": "help",
     "sidebar": "toggle_sidebar",
+    "theme": "theme",
     "back": "back", "forward": "forward", "bookmarks": "bookmarks",
     "nextchange": "nextchange", "prevchange": "prevchange", "diffsource": "diffsource",
 }
@@ -36,6 +38,9 @@ def preferences(value: dict) -> dict:
     for key in DEFAULTS:
         if key in value:
             result[key] = value[key]
+    saved_theme = theme_name(value.get("theme"))
+    if saved_theme is not None:
+        result["theme"] = saved_theme
     if type(result["sidebar_width"]) is not int or not 16 <= result["sidebar_width"] <= 70:
         raise TrailError("Saved sidebar width must be between 16 and 70.")
     for key in ("sidebar_visible", "find_case", "find_regex"):
