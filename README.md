@@ -14,12 +14,16 @@ Explore committed folders and choose Catppuccin or Gruvbox colors.
 
 ## Install the command
 
-On macOS or Linux, download and run the installer:
+On macOS or Linux, install or update with one command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.sh -o script.sh &&
-bash script.sh
+curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.sh | bash
 ```
+
+Run the same command whenever you want to update. It selects the latest verified
+release pinned in the public installer. If that exact release is already
+installed and healthy, it reports `already up to date` without downloading or
+creating another runtime bundle. Preferences, bookmarks, and sessions are kept.
 
 Requires Git, curl, tar, and internet access. The installer downloads private
 Python 3.13 and prebuilt dependencies. It installs an executable command with
@@ -34,29 +38,43 @@ git-trail /path/to/repository
 ```
 
 Add that export to your shell profile to keep it across terminal sessions.
-Choose another installation directory with `bash script.sh --prefix /your/path`.
-For example, `--prefix "$HOME/tools"` installs `"$HOME/tools/bin/git-trail"`.
-The installer prints the matching PATH command.
-
-The default source is the verified v0.6.0 commit. Download the latest installer
-again when upgrading, or select a published commit, tag, or branch explicitly:
+Choose another installation directory by passing `--prefix`:
 
 ```sh
-bash script.sh --ref main
+curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.sh |
+  bash -s -- --prefix "$HOME/tools"
 ```
 
+This installs `"$HOME/tools/bin/git-trail"`. Keep the same prefix when updating.
+The installer prints the matching PATH command.
+
+The default source is the verified v0.6.0 commit. To follow the current `main`
+branch instead of the verified release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.sh |
+  bash -s -- --ref main
+```
+
+Explicit branch and tag references refresh on each run. An exact commit can use
+the same healthy-release check as the default.
 Updates switch the command after the new installation passes its version check.
 A failed update keeps the previous command working. Older runtime bundles remain
 under `PREFIX/share/git-trail/releases` until you uninstall.
-An unrelated existing `git-trail` command is left in place; choose another prefix.
+An existing launcher symlink to an official Git Trail checkout is migrated
+automatically after the replacement validates. The checkout and its local
+changes stay intact. Older installer-managed installations also update
+automatically. An unrelated existing command is left in place; choose another prefix.
 Concurrent installs into one prefix are refused.
 
 To remove the installed command and its private runtimes:
 
 ```sh
-bash script.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.sh |
+  bash -s -- --uninstall
 # For a custom prefix:
-bash script.sh --prefix "$HOME/tools" --uninstall
+curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.sh |
+  bash -s -- --prefix "$HOME/tools" --uninstall
 ```
 
 Your preferences, bookmarks, and session files are kept.
@@ -394,3 +412,5 @@ Explorer coverage includes deep and Unicode filenames, folder navigation,
 search/tree transitions, committed path identity, and narrow pane rendering.
 Theme coverage checks rendered colors, picker controls, persistence, independent
 app instances, and unchanged source/search/diff state across all seven palettes.
+Installer coverage includes piped installs, repeat-run no-ops, immutable and
+mutable updates, checkout migration, failure rollback, and concurrent path changes.
