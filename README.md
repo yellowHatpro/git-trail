@@ -188,6 +188,26 @@ guaranteed to retain its identity. Merge traversal follows Git's range-history
 rules; it is not a complete exploration of every parent. Shallow clones may lack
 older changes, and this is reported.
 
+For a complete parsed function or class, use `:follow` in the TUI or opt in
+from the CLI:
+
+```sh
+git-trail /path/to/repository src/pricing.py --symbol total_price --follow-symbol --json
+```
+
+Symbol history follows first parents through same-file renames and cross-file
+moves. Same-path names with the same enclosing scope continue through body edits.
+Other matches use name-normalized token bodies, preserving literals and operators.
+Exact bodies or strong similarity can link a predecessor; the score is a heuristic,
+not a probability or proof of semantic identity. Ordinary line history is unchanged.
+
+Tied candidates, retained originals, weak matches, unreadable source, or scan limits
+stop with a **partial history** warning. The Commit view includes tracking details.
+Before/After show the actual old/new file and complete symbol range. Scans are
+limited to 300 first-parent commits, 200 candidate files per transition, 2 MB per
+file, 20 MB of historical source, 4,000 tokens per definition, and 45 seconds.
+Split/merged definitions and cross-language refactors remain outside this mode.
+
 The timeline shows commit dates. Author dates are also included in JSON. Git
 does not record when a commit was pushed or first received by a remote repository.
 Unusual control characters and Unicode line separators display as visible symbols;

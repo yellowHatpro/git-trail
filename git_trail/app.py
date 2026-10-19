@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from importlib.resources import files as resource_files
 from pathlib import PurePosixPath
@@ -250,6 +251,7 @@ class HelpScreen(ModalScreen):
 class InitialSelection:
     path: str | None = None
     selection: LineRange | None = None
+    follow_symbol: bool = False
 
 
 class TrailApp(App):
@@ -388,6 +390,7 @@ class TrailApp(App):
         self._rendering_timeline = False
         self._prompt_origin = None
         self._normal_prefix = ""
+        self._symbol_cancel = threading.Event()
 
     def compose(self) -> ComposeResult:
         yield Static(f"Git Trail  /  {self.repository.root.name}  /  {self.repository.commit[:7]}", id="workspace-title")
@@ -668,6 +671,7 @@ class TrailApp(App):
         self.run_worker(self.load_file(path), group="file", exclusive=True, exit_on_error=False)
 
     async def load_file(self, path: str, selection: LineRange | None = None) -> None:
+        self._symbol_cancel.set()
         self.close_prompt()
         self._load_generation += 1
         generation = self._load_generation
@@ -708,7 +712,9 @@ class TrailApp(App):
         self.status(message)
         if selection:
             self.select_range(selection)
-            await self.trace_selection(selection)
+            await self.trace_selection(selection, follow=self.initial.follow_symbol)
+        elif self.initial.follow_symbol:
+            self.action_follow()
 
     def selected_range(self) -> LineRange:
         if self.snapshot is None:
@@ -753,11 +759,14 @@ class TrailApp(App):
             self.trace_selection(selection), group="history", exclusive=True, exit_on_error=False
         )
 
-    async def trace_selection(self, selection: LineRange) -> None:
+    async def trace_selection(self, selection: LineRange, *, follow: bool = False) -> None:
         if self.snapshot is None:
             return
         snapshot = self.snapshot
         repository = self.snapshot_repository
+        self._symbol_cancel.set()
+        self._symbol_cancel = threading.Event()
+        cancellation = self._symbol_cancel
         self._history_generation += 1
         generation = self._history_generation
         self.timeline = None
@@ -771,7 +780,13 @@ class TrailApp(App):
         self.query_one("#diff", Static).update("Tracing selected lines…")
         self.status(f"Tracing {snapshot.path}:{selection.start}:{selection.end}…")
         try:
-            timeline = await asyncio.to_thread(repository.history, snapshot, selection)
+            if follow:
+                timeline = await asyncio.to_thread(repository.symbol_history, snapshot, selection, cancel=cancellation)
+            else:
+                timeline = await asyncio.to_thread(repository.history, snapshot, selection)
+        except asyncio.CancelledError:
+            cancellation.set()
+            raise
         except TrailError as error:
             if generation == self._history_generation:
                 self.query_one("#diff", Static).update("History unavailable.")
@@ -788,6 +803,24 @@ class TrailApp(App):
             + (" · shallow history" if any("shallow" in warning for warning in timeline.warnings) else "")
             + (" · local edits excluded" if snapshot.working_tree_changed else "")
         )
+        if timeline.mode == "symbol":
+            note = "\n".join(timeline.warnings)
+            self.query_one("#source-note", Static).update(Text(note))
+            self.query_one("#source-note", Static).add_class("important")
+            self.status(f"Symbol history · {len(timeline.entries)} changes · " + timeline.warnings[-1],
+                        error=any("Partial" in warning for warning in timeline.warnings))
+            if not timeline.entries:
+                self.snapshot = snapshot
+                self.snapshot_repository = repository
+                self.display_snapshot(snapshot)
+                self.select_range(selection)
+                self.query_one("#source-note", Static).update(Text(note))
+                self.query_one("#source-note", Static).add_class("important")
+                self.query_one("#diff", Static).update(Text(note))
+                self.status(timeline.warnings[-1], error=True)
+
+    def on_unmount(self) -> None:
+        self._symbol_cancel.set()
 
     def apply_history_filter(self) -> None:
         if self.timeline is None:
@@ -845,6 +878,8 @@ class TrailApp(App):
 
     @on(OptionList.OptionHighlighted, "#timeline")
     def entry_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if self.selected_entry is not None and self.selected_entry.commit == event.option.id:
+            return
         if not self._rendering_timeline and event.option.id in {entry.commit for entry in self.filtered_entries}:
             index = next(index for index, entry in enumerate(self.filtered_entries) if entry.commit == event.option.id)
             self.show_entry(index)
@@ -909,6 +944,10 @@ class TrailApp(App):
         self.query_one("#source-note", Static).update(
             note or f"{mode.capitalize()} this change · Ctrl+F finds in this revision"
         )
+        if self.timeline and self.timeline.mode == "symbol":
+            partial = [warning for warning in self.timeline.warnings if "Partial" in warning]
+            note = " · ".join([*partial, entry.tracking_note])
+            self.query_one("#source-note", Static).update(Text(note or "Symbol history uses first parents."))
         self.query_one("#source-note", Static).set_class(bool(note), "important")
         self.refresh_search()
         context = Text()
@@ -921,12 +960,16 @@ class TrailApp(App):
             context.append(f"  {path}\n")
         if len(entry.parents) > 1:
             context.append("\nMerge commit. Files include changes against all parents.\n", style="#94a3b8")
+        if self.timeline and self.timeline.mode == "symbol":
+            context.append("\nSYMBOL TRACKING\n" + entry.tracking_note + "\n\n" + "\n".join(self.timeline.warnings))
         self.query_one("#commit-details", Static).update(context)
         self.status(
             f"{len(self.timeline.entries)} changes · {mode.capitalize()} {entry.commit[:8]} · Ctrl+J/K navigate · F1 help"
             + (" · local edits excluded" if self.traced_snapshot and self.traced_snapshot.working_tree_changed else "")
             + (" · shallow history" if self.timeline and any("shallow" in warning for warning in self.timeline.warnings) else "")
         )
+        if self.timeline and self.timeline.mode == "symbol" and partial:
+            self.status(partial[-1], error=True)
 
     def navigate(self, offset: int) -> None:
         options = self.query_one("#timeline", OptionList)
@@ -1022,6 +1065,7 @@ class TrailApp(App):
                     "regex": ("#find-regex", True), "noregex": ("#find-regex", False)}
         actions = {
             "help": self.action_help, "symbols": self.action_browse_symbols,
+            "follow": self.action_follow,
             "sidebar": self.action_toggle_sidebar,
             "before": lambda: self.set_source_mode("before"),
             "after": lambda: self.set_source_mode("after"),
@@ -1223,6 +1267,23 @@ class TrailApp(App):
             self.select_range(enclosing_symbol(self.snapshot.text, self.snapshot.path, line))
         except TrailError as error:
             self.status(str(error), error=True)
+
+    def action_follow(self) -> None:
+        if self.snapshot is None:
+            self.status("Choose a source revision first.", error=True)
+            return
+        try:
+            chosen = self.selected_range()
+            items = symbols(self.snapshot.text, self.snapshot.path)
+            if not any(item.start == chosen.start and item.end == chosen.end for item in items):
+                source = self.query_one("#source", SourceView)
+                line = source.vim.cursor[0] + 1 if source.vim.mode != "NORMAL" else source.cursor_location[0] + 1
+                chosen = enclosing_symbol(self.snapshot.text, self.snapshot.path, line)
+            self.select_range(chosen)
+        except TrailError as error:
+            self.status(str(error), error=True)
+            return
+        self.run_worker(self.trace_selection(chosen, follow=True), group="history", exclusive=True, exit_on_error=False)
 
     def action_browse_symbols(self) -> None:
         if self.snapshot is None:

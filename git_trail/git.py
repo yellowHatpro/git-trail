@@ -70,6 +70,11 @@ class HistoryEntry:
     new_count: int
     old_path: str = ""
     new_path: str = ""
+    old_range: LineRange | None = None
+    new_range: LineRange | None = None
+    match_method: str = ""
+    similarity: float | None = None
+    tracking_note: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -97,6 +102,7 @@ class Timeline:
     selection: LineRange
     entries: tuple[HistoryEntry, ...]
     warnings: tuple[str, ...]
+    mode: str = "range"
 
     def to_dict(self) -> dict:
         return {
@@ -106,6 +112,7 @@ class Timeline:
             "selection": asdict(self.selection),
             "warnings": list(self.warnings),
             "entries": [entry.to_dict() for entry in self.entries],
+            "mode": self.mode,
         }
 
 
@@ -237,13 +244,18 @@ class Repository:
     @lru_cache(maxsize=64)
     def historical_source(self, entry: HistoryEntry, before: bool = False) -> HistoryView:
         if before and not entry.parents:
-            return HistoryView(None, None, "This is the first commit. No earlier source exists.")
+            return HistoryView(None, None, entry.tracking_note or "This is the first commit. No earlier source exists.")
         commit = entry.parents[0] if before else entry.commit
         path = entry.old_path if before else entry.new_path
         if not path:
             return HistoryView(None, None, "The file does not exist on this side of the change.")
         text = self.revision_text(path, commit)
         snapshot = Snapshot(path, commit, text, False)
+        if entry.match_method:
+            selection = entry.old_range if before else entry.new_range
+            if selection:
+                selection.validate(len(snapshot.lines))
+            return HistoryView(snapshot, selection, entry.tracking_note)
         side = 0 if before else 2
         coordinates = re.findall(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", entry.patch, re.M)
         ranges = [
@@ -288,6 +300,10 @@ class Repository:
         return Timeline(
             str(self.root), snapshot.path, self.commit, selection, entries, tuple(warnings)
         )
+
+    def symbol_history(self, snapshot: Snapshot, selection: LineRange, *, cancel=None) -> Timeline:
+        from .tracking import follow_symbol
+        return follow_symbol(self, snapshot, selection, cancel=cancel)
 
 
 def parse_history(output: bytes) -> tuple[HistoryEntry, ...]:

@@ -41,6 +41,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--occurrence", type=int, default=1, help="1-based occurrence for --text")
     result.add_argument("--symbols", action="store_true", help="List parsed functions and classes and exit")
     result.add_argument("--json", action="store_true", help="Print selection history as JSON and exit")
+    result.add_argument("--follow-symbol", action="store_true", help="Follow a complete symbol through refactors (first-parent, conservative)")
     result.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return result
 
@@ -59,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
         argument_parser.error("--symbols cannot be combined with a selection.")
     if args.json and not has_selector and not args.symbols:
         argument_parser.error("--json requires --lines, --paragraph, --symbol, or --text.")
+    if args.follow_symbol and (not args.file or args.symbols):
+        argument_parser.error("--follow-symbol requires a file and cannot be combined with --symbols.")
     try:
         repository = Repository(args.repository, args.ref)
         snapshot = repository.snapshot(args.file) if args.file else None
@@ -83,11 +86,11 @@ def main(argv: list[str] | None = None) -> int:
                 selected.validate(len(snapshot.lines))
         if args.json:
             assert snapshot is not None and selected is not None
-            timeline = repository.history(snapshot, selected)
+            timeline = repository.symbol_history(snapshot, selected) if args.follow_symbol else repository.history(snapshot, selected)
             print(json.dumps(timeline.to_dict(), ensure_ascii=False, indent=2))
             return 0
         from .app import InitialSelection, TrailApp
-        TrailApp(repository, InitialSelection(snapshot.path if snapshot else None, selected)).run()
+        TrailApp(repository, InitialSelection(snapshot.path if snapshot else None, selected, args.follow_symbol)).run()
         return 0
     except TrailError as error:
         print(f"git-trail: {error}", file=sys.stderr)
