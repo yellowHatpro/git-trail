@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.
 This installs `"$HOME/tools/bin/git-trail"`. Keep the same prefix when updating.
 The installer prints the matching PATH command.
 
-The default source is the verified v0.6.0 commit. To follow the current `main`
+The default source is the verified v0.6.1 commit. To follow the current `main`
 branch instead of the verified release:
 
 ```sh
@@ -120,6 +120,9 @@ filenames inside folders and compresses single-child directory chains. Narrow
 rows keep the filename extension visible; `:path` opens the full selected path.
 With the explorer focused, use `j` / `k` to move, `l` to expand, and `h` to
 collapse or move to the parent. Enter or a click toggles folders or opens a file.
+Clicking a file keeps focus in the explorer; press Enter on a file to open it
+and focus the source pane. A slow mouse-triggered load preserves any pane you
+switch to while waiting.
 Ctrl+O opens filename-first search with directory context; Escape returns to the tree.
 
 Drag the sidebar's right edge to adjust its width, focus the divider and use Left/Right, or press
