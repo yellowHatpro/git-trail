@@ -11,6 +11,55 @@ Compare changes side by side and jump from a diff row to its exact historical so
 
 ![Git Trail showing source, its commit timeline, and a selected-range diff](docs/images/git-trail.svg)
 
+## Install the command
+
+On macOS or Linux, download and run the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yellowHatpro/git-trail/main/script.sh -o script.sh &&
+bash script.sh
+```
+
+Requires Git, curl, tar, and internet access. The installer downloads private
+Python 3.13 and prebuilt dependencies. It installs an executable command with
+its Python runtime; you do not need to install Python or uv yourself.
+It uses no sudo and leaves your shell profiles unchanged.
+
+The command is `~/.local/bin/git-trail`. If that directory is not on PATH:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+git-trail /path/to/repository
+```
+
+Add that export to your shell profile to keep it across terminal sessions.
+Choose another installation directory with `bash script.sh --prefix /your/path`.
+For example, `--prefix "$HOME/tools"` installs `"$HOME/tools/bin/git-trail"`.
+The installer prints the matching PATH command.
+
+The default source is the verified v0.5.0 commit. Download the latest installer
+again when upgrading, or select a published commit, tag, or branch explicitly:
+
+```sh
+bash script.sh --ref main
+```
+
+Updates switch the command after the new installation passes its version check.
+A failed update keeps the previous command working. Older runtime bundles remain
+under `PREFIX/share/git-trail/releases` until you uninstall.
+An unrelated existing `git-trail` command is left in place; choose another prefix.
+Concurrent installs into one prefix are refused.
+
+To remove the installed command and its private runtimes:
+
+```sh
+bash script.sh --uninstall
+# For a custom prefix:
+bash script.sh --prefix "$HOME/tools" --uninstall
+```
+
+Your preferences, bookmarks, and session files are kept.
+
 ## Run from source
 
 Requires Git, Python 3.10+, and [uv](https://docs.astral.sh/uv/).
